@@ -43,11 +43,12 @@ def build_client(account: Account) -> TelegramClient:
     """Создаёт (но не подключает) TelegramClient для аккаунта."""
     session_path = PROJECT_ROOT / account.session_path
     session_path.parent.mkdir(parents=True, exist_ok=True)
+    proxy = parse_proxy(account.proxy) if settings.proxies_enabled else None
     return TelegramClient(
         str(session_path),
         settings.tg_api_id,
         settings.tg_api_hash,
-        proxy=parse_proxy(account.proxy),
+        proxy=proxy,
     )
 
 
@@ -60,6 +61,12 @@ class AccountPool:
 
     async def load(self) -> None:
         """Подгружает enabled-аккаунты из БД и подключает клиенты."""
+        if not settings.proxies_enabled:
+            logger.warning(
+                "PROXIES_ENABLED=false — все аккаунты идут напрямую с IP сервера. "
+                "Только для теста, не для масштаба."
+            )
+
         async with async_session() as session:
             rows = (
                 await session.execute(

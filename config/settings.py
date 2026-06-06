@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     tg_api_id: int = Field(..., alias="TG_API_ID")
     tg_api_hash: str = Field(..., alias="TG_API_HASH")
 
+    # Глобальный тумблер: если false — поле Account.proxy игнорируется,
+    # клиенты ходят напрямую. Удобно для локального теста; на проде включай.
+    proxies_enabled: bool = Field(True, alias="PROXIES_ENABLED")
+
     # LLM
     anthropic_api_key: str = Field("", alias="ANTHROPIC_API_KEY")
     local_model_url: str = Field("http://localhost:8000/v1", alias="LOCAL_MODEL_URL")
