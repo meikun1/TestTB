@@ -146,6 +146,7 @@ async def run(mode: str) -> None:
                      "Запусти: python -m src.accounts.login --all")
         return
 
+    pool.start_background_refresh()
     dispatcher = Dispatcher(pool)
     logger.info(f"Sender запущен в '{mode}' режиме, "
                 f"{len(pool.active_ids())} аккаунтов в пуле")

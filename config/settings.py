@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     rampup_days: int = Field(14, alias="RAMPUP_DAYS")
     rampup_start_limit: int = Field(3, alias="RAMPUP_START_LIMIT")
 
+    # Раз в N секунд sender перечитывает пул из БД: новые аккаунты из
+    # intake API подключаются, удалённые/disabled отключаются.
+    pool_reload_interval_seconds: int = Field(
+        300, alias="POOL_RELOAD_INTERVAL_SECONDS"
+    )
+
     # === Dashboard / API ===
     dashboard_host: str = Field("0.0.0.0", alias="DASHBOARD_HOST")
     dashboard_port: int = Field(8080, alias="DASHBOARD_PORT")

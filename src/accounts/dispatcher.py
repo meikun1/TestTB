@@ -82,6 +82,9 @@ class Dispatcher:
         for i in range(n):
             idx = (self._cursor + i) % n
             acc = self.pool.get_account(ids[idx])
+            if acc is None:
+                # аккаунт исчез между snapshot и pick (live-refresh выкинул)
+                continue
             ok, _ = await self.has_capacity(acc)
             if ok:
                 self._cursor = (idx + 1) % n

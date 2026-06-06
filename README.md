@@ -112,7 +112,7 @@ acc01,+79001234567,sessions/acc01.session,socks5://user:pass@1.2.3.4:1080,80,8
 
 - [x] Мульти-аккаунт с прокси и диспетчером
 - [x] Web-dashboard со статусами + intake API для приёма сессий
-- [ ] Live-reload пула без рестарта sender'а
+- [x] Live-reload пула без рестарта sender'а
 - [ ] Health-checker: фоновая проверка `is_user_authorized` для всего пула
 - [ ] Сбор датасета из истории для файнтюна
 - [ ] LoRA Qwen 2.5 7B на собственном стиле, инференс через vLLM
