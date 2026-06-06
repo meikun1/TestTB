@@ -1,13 +1,11 @@
 """Асинхронное подключение к SQLite через SQLAlchemy."""
-from pathlib import Path
-
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine, AsyncSession
 
 from config import settings, PROJECT_ROOT
 from .models import Base
 
 
-# Гарантируем существование папок для БД и telethon-сессии
+# Гарантируем существование папок для БД и telethon-сессии (нужно для первого запуска на сервере)
 (PROJECT_ROOT / settings.db_path).parent.mkdir(parents=True, exist_ok=True)
 (PROJECT_ROOT / "logs").mkdir(parents=True, exist_ok=True)
 
