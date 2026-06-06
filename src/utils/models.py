@@ -163,3 +163,23 @@ class SendLog(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 'message' | 'attachment' | 'message+attachment'
     kind: Mapped[str] = mapped_column(String(32), default="message")
+
+
+class UsedEmail(Base):
+    """
+    Журнал использованных email-адресов для верификации Telegram.
+
+    Когда Telegram при логине просит подтвердить почту — мы генерируем
+    случайный <random>@<EMAIL_DOMAIN>, подаём ему, ждём код в IMAP.
+    Каждый адрес используется ровно один раз — эта таблица гарантирует
+    уникальность и хранит аудит.
+    """
+    __tablename__ = "used_emails"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    address: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

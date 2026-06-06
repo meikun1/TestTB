@@ -135,6 +135,18 @@ class Settings(BaseSettings):
     dashboard_port: int = Field(8080, alias="DASHBOARD_PORT")
     dashboard_token: str = Field("change-me", alias="DASHBOARD_TOKEN")
 
+    # === Email verification (catch-all почтовый сервер) ===
+    # Telegram иногда при логине требует подтвердить email. Мы генерим
+    # случайный <random>@<EMAIL_DOMAIN>, подаём его, ждём код в IMAP.
+    email_domain: str = Field("", alias="EMAIL_DOMAIN")
+    imap_host: str = Field("", alias="IMAP_HOST")
+    imap_port: int = Field(993, alias="IMAP_PORT")
+    imap_user: str = Field("", alias="IMAP_USER")
+    imap_password: str = Field("", alias="IMAP_PASSWORD")
+    imap_use_ssl: bool = Field(True, alias="IMAP_USE_SSL")
+    # сколько секунд ждать код в почте при логине
+    email_code_timeout_seconds: int = Field(180, alias="EMAIL_CODE_TIMEOUT_SECONDS")
+
     @property
     def db_url(self) -> str:
         if self.use_postgres:

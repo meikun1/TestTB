@@ -1,5 +1,5 @@
 from .db import init_db, async_session, engine
-from .models import Base, Account, Contact, Message, Draft, SendLog
+from .models import Base, Account, Contact, Message, Draft, SendLog, UsedEmail
 from . import bus
 
 __all__ = [
@@ -12,5 +12,6 @@ __all__ = [
     "Message",
     "Draft",
     "SendLog",
+    "UsedEmail",
     "bus",
 ]
