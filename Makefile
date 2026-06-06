@@ -2,14 +2,27 @@ PY := ./venv/bin/python
 TOP ?= 10
 GOAL ?= personal
 HOOK ?=
+CSV ?= accounts.csv
+NAME ?=
 
-.PHONY: install fetch score generate send-review send-auto clean docker-build docker-up docker-down docker-login
+.PHONY: install accounts-import accounts-login fetch-all fetch score generate send-review send-auto clean docker-build docker-up docker-down docker-login
 
 install:
 	./install.sh
 
+# --- Multi-account ---
+accounts-import:
+	$(PY) -m src.accounts.bulk_import $(CSV)
+
+accounts-login:
+	$(PY) -m src.accounts.login --all
+
+# --- Workflow ---
+fetch-all:
+	$(PY) -m src.fetcher.fetch_dialogs --all
+
 fetch:
-	$(PY) -m src.fetcher.fetch_dialogs
+	$(PY) -m src.fetcher.fetch_dialogs --account $(NAME)
 
 score:
 	$(PY) -m src.scoring.score_contacts

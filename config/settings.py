@@ -1,4 +1,9 @@
-"""Конфигурация проекта. Все настройки читаются из .env"""
+"""Конфигурация проекта. Все настройки читаются из .env
+
+ВАЖНО: per-account параметры (phone, session_path, proxy, daily/hourly limit)
+живут в таблице `accounts` в БД. Здесь — только глобальные ручки, общие
+для всех аккаунтов: API-ключи, окна активности, ramp-up, typing и т.п.
+"""
 from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,23 +19,22 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Telegram
+    # Telegram API — общий на все аккаунты (один app на my.telegram.org)
     tg_api_id: int = Field(..., alias="TG_API_ID")
     tg_api_hash: str = Field(..., alias="TG_API_HASH")
-    tg_phone: str = Field(..., alias="TG_PHONE")
-    tg_session_name: str = Field("tg_assistant_session", alias="TG_SESSION_NAME")
 
     # LLM
     anthropic_api_key: str = Field("", alias="ANTHROPIC_API_KEY")
     local_model_url: str = Field("http://localhost:8000/v1", alias="LOCAL_MODEL_URL")
     use_local_model: bool = Field(False, alias="USE_LOCAL_MODEL")
 
-    # === Лимиты отправки ===
-    max_messages_per_day: int = Field(20, alias="MAX_MESSAGES_PER_DAY")
-    max_messages_per_hour: int = Field(4, alias="MAX_MESSAGES_PER_HOUR")
+    # === Дефолтные лимиты при импорте нового аккаунта ===
+    # (per-account значения хранятся в таблице accounts и могут отличаться)
+    default_daily_limit: int = Field(50, alias="DEFAULT_DAILY_LIMIT")
+    default_hourly_limit: int = Field(8, alias="DEFAULT_HOURLY_LIMIT")
     weekend_multiplier: float = Field(0.5, alias="WEEKEND_MULTIPLIER")
 
-    # === Паузы между отправками ===
+    # === Паузы между отправками (глобально) ===
     min_delay_seconds: int = Field(420, alias="MIN_DELAY_SECONDS")
     max_delay_seconds: int = Field(3600, alias="MAX_DELAY_SECONDS")
 

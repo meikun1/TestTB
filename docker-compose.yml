@@ -8,6 +8,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+      - ./sessions:/app/sessions
     stdin_open: true
     tty: true
     command: python -m src.sender.send_queue --mode auto

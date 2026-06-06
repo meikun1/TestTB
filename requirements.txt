@@ -8,3 +8,5 @@ aiosqlite>=0.20.0
 loguru>=0.7.0
 tenacity>=8.2.0
 pytz>=2024.1
+PySocks>=1.7.1
+python-socks[asyncio]>=2.4.0

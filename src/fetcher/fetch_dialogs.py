@@ -1,41 +1,41 @@
 """
-Выгрузка диалогов и истории сообщений из Telegram.
+Выгрузка диалогов и истории сообщений из Telegram — для конкретного аккаунта.
 
-Использует Telethon (user API, MTProto). При первом запуске Telegram
-попросит код подтверждения — введи его в консоли.
+Использует Telethon (user API, MTProto). При первом запуске для каждого
+неавторизованного аккаунта Telegram попросит код подтверждения.
 
-Запуск: python -m src.fetcher.fetch_dialogs
+Запуск:
+    python -m src.fetcher.fetch_dialogs --account acc01
+    python -m src.fetcher.fetch_dialogs --all
 """
+import argparse
 import asyncio
-from datetime import datetime
 
 from loguru import logger
 from sqlalchemy import select
 from telethon import TelegramClient
 from telethon.tl.types import User
 
-from config import settings, PROJECT_ROOT
-from src.utils import init_db, async_session, Contact, Message
+from src.accounts.pool import build_client
+from src.utils import init_db, async_session, Account, Contact, Message
 
 
 # Сколько последних сообщений вытаскивать на каждый диалог.
-# 200 — компромисс между полнотой контекста и скоростью.
 MESSAGES_PER_DIALOG = 200
 
 
-def make_client() -> TelegramClient:
-    session_path = PROJECT_ROOT / "data" / settings.tg_session_name
-    return TelegramClient(str(session_path), settings.tg_api_id, settings.tg_api_hash)
-
-
-async def upsert_contact(session, user: User) -> Contact:
+async def upsert_contact(session, account_id: int, user: User) -> Contact:
     result = await session.execute(
-        select(Contact).where(Contact.tg_user_id == user.id)
+        select(Contact).where(
+            Contact.account_id == account_id,
+            Contact.tg_user_id == user.id,
+        )
     )
     contact = result.scalar_one_or_none()
 
     if contact is None:
         contact = Contact(
+            account_id=account_id,
             tg_user_id=user.id,
             username=user.username,
             first_name=user.first_name,
@@ -53,7 +53,6 @@ async def upsert_contact(session, user: User) -> Contact:
 
 
 async def save_messages(session, contact: Contact, messages_data: list[dict]) -> int:
-    """Сохраняет сообщения, пропуская дубликаты по tg_message_id."""
     existing = await session.execute(
         select(Message.tg_message_id).where(Message.contact_id == contact.id)
     )
@@ -69,17 +68,15 @@ async def save_messages(session, contact: Contact, messages_data: list[dict]) ->
     return new_count
 
 
-async def fetch_all() -> None:
-    await init_db()
-    client = make_client()
-    await client.start(phone=settings.tg_phone)
-    logger.info("Telegram client started")
+async def fetch_one_account(account: Account) -> None:
+    client: TelegramClient = build_client(account)
+    await client.start(phone=account.phone)
+    logger.info(f"[{account.name}] Telegram client started")
 
     total_contacts = 0
     total_messages = 0
 
     async for dialog in client.iter_dialogs():
-        # Берём только личные диалоги, не каналы и не группы
         if not dialog.is_user:
             continue
         entity = dialog.entity
@@ -87,11 +84,11 @@ async def fetch_all() -> None:
             continue
 
         async with async_session() as session:
-            contact = await upsert_contact(session, entity)
+            contact = await upsert_contact(session, account.id, entity)
 
             messages_data = []
             async for msg in client.iter_messages(entity, limit=MESSAGES_PER_DIALOG):
-                if not msg.text:  # пропускаем медиа без подписей
+                if not msg.text:
                     continue
                 messages_data.append(
                     {
@@ -112,16 +109,52 @@ async def fetch_all() -> None:
 
             total_contacts += 1
             total_messages += added
-            logger.info(
-                f"[{total_contacts}] {entity.first_name or entity.username}: "
-                f"+{added} messages"
-            )
 
     await client.disconnect()
     logger.success(
-        f"Done. Contacts: {total_contacts}, new messages: {total_messages}"
+        f"[{account.name}] Done. Contacts: {total_contacts}, "
+        f"new messages: {total_messages}"
     )
 
 
+async def fetch_all_accounts() -> None:
+    async with async_session() as session:
+        accs = (
+            await session.execute(
+                select(Account).where(Account.enabled.is_(True))
+            )
+        ).scalars().all()
+
+    for acc in accs:
+        try:
+            await fetch_one_account(acc)
+        except Exception as e:
+            logger.error(f"[{acc.name}] fetch failed: {e}")
+
+
+async def fetch_by_name(name: str) -> None:
+    async with async_session() as session:
+        acc = (
+            await session.execute(select(Account).where(Account.name == name))
+        ).scalar_one_or_none()
+        if not acc:
+            raise SystemExit(f"Аккаунт {name} не найден в БД")
+    await fetch_one_account(acc)
+
+
+async def main(account_name: str | None, all_flag: bool) -> None:
+    await init_db()
+    if all_flag:
+        await fetch_all_accounts()
+    elif account_name:
+        await fetch_by_name(account_name)
+    else:
+        raise SystemExit("Укажи --account <name> или --all")
+
+
 if __name__ == "__main__":
-    asyncio.run(fetch_all())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--account", type=str, default=None)
+    parser.add_argument("--all", action="store_true")
+    args = parser.parse_args()
+    asyncio.run(main(args.account, args.all))

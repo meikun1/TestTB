@@ -27,10 +27,12 @@ client = AsyncAnthropic(api_key=settings.anthropic_api_key)
 MODEL = "claude-opus-4-7"
 
 
-async def collect_style_examples(session, limit: int = 8) -> str:
-    """Собирает несколько свежих реплик пользователя — для few-shot стиля."""
+async def collect_style_examples(session, account_id: int, limit: int = 8) -> str:
+    """Собирает несколько свежих реплик данного аккаунта — для few-shot стиля."""
     result = await session.execute(
         select(Message.text)
+        .join(Contact, Contact.id == Message.contact_id)
+        .where(Contact.account_id == account_id)
         .where(Message.from_me.is_(True))
         .where(func_len(Message.text).between(20, 200))
         .order_by(desc(Message.date))
@@ -82,7 +84,7 @@ async def call_llm(system: str, user: str) -> dict:
 
 
 async def generate_for_contact(session, contact: Contact, goal: str, hook: str) -> None:
-    style_examples = await collect_style_examples(session)
+    style_examples = await collect_style_examples(session, contact.account_id)
     history = await collect_history(session, contact.id)
 
     days_since = (
@@ -118,6 +120,7 @@ async def generate_for_contact(session, contact: Contact, goal: str, hook: str) 
         session.add(
             Draft(
                 contact_id=contact.id,
+                account_id=contact.account_id,
                 text=variant["text"],
                 variant_label=variant.get("label"),
                 status="pending",
@@ -126,21 +129,40 @@ async def generate_for_contact(session, contact: Contact, goal: str, hook: str) 
     logger.success(f"Drafts for {name}: {len(result.get('variants', []))}")
 
 
-async def main(top_n: int, goal: str, hook: str) -> None:
-    async with async_session() as session:
-        contacts = (
-            await session.execute(
-                select(Contact)
-                .where(Contact.category.in_(["warm", "cooling"]))
-                .order_by(Contact.score.desc())
-                .limit(top_n)
-            )
-        ).scalars().all()
+async def main(top_n: int, goal: str, hook: str, account_name: str | None) -> None:
+    """
+    Генерирует черновики для топ-N контактов.
 
-        logger.info(f"Generating drafts for {len(contacts)} contacts...")
-        for c in contacts:
-            await generate_for_contact(session, c, goal, hook)
-            await session.commit()
+    Без --account: top_n берётся ПО КАЖДОМУ аккаунту отдельно (для масштаба).
+    С --account <name>: только контакты этого аккаунта.
+    """
+    from src.utils import Account
+
+    async with async_session() as session:
+        acc_query = select(Account).where(Account.enabled.is_(True))
+        if account_name:
+            acc_query = acc_query.where(Account.name == account_name)
+        accounts = (await session.execute(acc_query)).scalars().all()
+
+        if not accounts:
+            logger.warning("Нет подходящих аккаунтов")
+            return
+
+        for acc in accounts:
+            contacts = (
+                await session.execute(
+                    select(Contact)
+                    .where(Contact.account_id == acc.id)
+                    .where(Contact.category.in_(["warm", "cooling"]))
+                    .order_by(Contact.score.desc())
+                    .limit(top_n)
+                )
+            ).scalars().all()
+
+            logger.info(f"[{acc.name}] Generating drafts for {len(contacts)} contacts...")
+            for c in contacts:
+                await generate_for_contact(session, c, goal, hook)
+                await session.commit()
 
 
 if __name__ == "__main__":
@@ -152,6 +174,12 @@ if __name__ == "__main__":
         default="personal",
     )
     parser.add_argument("--hook", type=str, default="")
+    parser.add_argument(
+        "--account",
+        type=str,
+        default=None,
+        help="Только для одного аккаунта; иначе по всем enabled",
+    )
     args = parser.parse_args()
 
-    asyncio.run(main(args.top, args.goal, args.hook))
+    asyncio.run(main(args.top, args.goal, args.hook, args.account))

@@ -7,6 +7,9 @@ venv/
 data/*.db
 data/*.session
 data/*.session-journal
+sessions/*.session
+sessions/*.session-journal
+accounts.csv
 logs/*.log
 .DS_Store
 .idea/

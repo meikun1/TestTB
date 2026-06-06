@@ -1,0 +1,4 @@
+name,phone,session_path,proxy,daily_limit,hourly_limit
+acc01,+79001234567,sessions/acc01.session,socks5://user:pass@1.2.3.4:1080,80,8
+acc02,+79007654321,sessions/acc02.session,socks5://user:pass@1.2.3.5:1080,80,8
+acc03,+79009876543,,,,

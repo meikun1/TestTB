@@ -26,7 +26,7 @@ echo "==> Ставлю зависимости"
 ./venv/bin/pip install -r requirements.txt
 
 echo "==> Готовлю папки"
-mkdir -p data logs
+mkdir -p data logs sessions
 
 if [ ! -f .env ]; then
     cp .env.example .env
@@ -37,9 +37,14 @@ fi
 
 echo
 echo "Готово. Дальше:"
-echo "  1. Заполни .env (TG_API_ID, TG_API_HASH, TG_PHONE, ANTHROPIC_API_KEY)"
+echo "  1. Заполни .env (TG_API_ID, TG_API_HASH, ANTHROPIC_API_KEY)"
 echo "  2. source venv/bin/activate"
-echo "  3. python -m src.fetcher.fetch_dialogs   # первый запуск спросит код из Telegram"
-echo "  4. python -m src.scoring.score_contacts"
-echo "  5. python -m src.generator.generate_drafts --top 10"
-echo "  6. python -m src.sender.send_queue --mode review"
+echo "  3. Подготовь accounts.csv (см. accounts.example.csv) и импортируй:"
+echo "       python -m src.accounts.bulk_import accounts.csv"
+echo "  4. Положи session-файлы в sessions/ ИЛИ авторизуйся:"
+echo "       python -m src.accounts.login --all"
+echo "  5. Выкачать историю по каждому аккаунту:"
+echo "       python -m src.fetcher.fetch_dialogs --all"
+echo "  6. python -m src.scoring.score_contacts"
+echo "  7. python -m src.generator.generate_drafts --top 10"
+echo "  8. python -m src.sender.send_queue --mode review"

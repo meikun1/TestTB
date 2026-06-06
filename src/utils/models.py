@@ -1,6 +1,8 @@
-"""Модели БД: контакты, сообщения, черновики, лог отправок."""
+"""Модели БД для мульти-аккаунтной рассылки."""
 from datetime import datetime
-from sqlalchemy import String, Integer, Float, DateTime, Text, Boolean, ForeignKey
+from sqlalchemy import (
+    String, Integer, Float, DateTime, Text, Boolean, ForeignKey, UniqueConstraint
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -8,11 +10,43 @@ class Base(DeclarativeBase):
     pass
 
 
-class Contact(Base):
-    __tablename__ = "contacts"
+class Account(Base):
+    __tablename__ = "accounts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    tg_user_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    phone: Mapped[str] = mapped_column(String(32))
+    session_path: Mapped[str] = mapped_column(String(255))
+    # socks5://user:pass@host:port  или  http://user:pass@host:port  (null = без прокси)
+    proxy: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    daily_limit: Mapped[int] = mapped_column(Integer, default=50)
+    hourly_limit: Mapped[int] = mapped_column(Integer, default=8)
+
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # active | flood | banned | disabled
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    status_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # пока flood_until > now — аккаунт пропускаем
+    flood_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_send_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    contacts: Mapped[list["Contact"]] = relationship(back_populates="account")
+
+
+class Contact(Base):
+    __tablename__ = "contacts"
+    __table_args__ = (
+        UniqueConstraint("account_id", "tg_user_id", name="uq_account_tguser"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+
+    tg_user_id: Mapped[int] = mapped_column(Integer, index=True)
     username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     first_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     last_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -20,7 +54,6 @@ class Contact(Base):
 
     # Скоринг
     category: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    # warm | cooling | cold | dead
     last_msg_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_msg_from_me: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     total_messages: Mapped[int] = mapped_column(Integer, default=0)
@@ -29,13 +62,13 @@ class Contact(Base):
     # Контекст для генерации
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     hook: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # повод написать
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
 
+    account: Mapped["Account"] = relationship(back_populates="contacts")
     messages: Mapped[list["Message"]] = relationship(back_populates="contact")
     drafts: Mapped[list["Draft"]] = relationship(back_populates="contact")
 
@@ -58,10 +91,13 @@ class Draft(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), index=True)
+    # денормализовано: позволяет диспетчеру быстро фильтровать по аккаунту
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+
     text: Mapped[str] = mapped_column(Text)
     variant_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    status: Mapped[str] = mapped_column(String(32), default="pending")
     # pending | approved | rejected | sent | failed
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -74,6 +110,9 @@ class SendLog(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     draft_id: Mapped[int] = mapped_column(ForeignKey("drafts.id"))
-    sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
     success: Mapped[bool] = mapped_column(Boolean)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
