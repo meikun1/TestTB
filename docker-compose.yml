@@ -1,8 +1,8 @@
 services:
-  tg-assistant:
+  sender:
     build: .
     image: tg-assistant:latest
-    container_name: tg-assistant
+    container_name: tg-assistant-sender
     restart: unless-stopped
     env_file: .env
     volumes:
@@ -12,3 +12,18 @@ services:
     stdin_open: true
     tty: true
     command: python -m src.sender.send_queue --mode auto
+
+  dashboard:
+    image: tg-assistant:latest
+    container_name: tg-assistant-dashboard
+    restart: unless-stopped
+    depends_on:
+      - sender
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./sessions:/app/sessions
+    ports:
+      - "${DASHBOARD_PORT:-8080}:8080"
+    command: python -m src.dashboard.app

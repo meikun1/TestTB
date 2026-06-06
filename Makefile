@@ -36,6 +36,10 @@ send-review:
 send-auto:
 	$(PY) -m src.sender.send_queue --mode auto
 
+# --- Dashboard / API ---
+dashboard:
+	$(PY) -m src.dashboard.app
+
 clean:
 	rm -rf venv __pycache__ */__pycache__ */*/__pycache__
 

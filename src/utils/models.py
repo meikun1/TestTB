@@ -16,7 +16,13 @@ class Account(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     phone: Mapped[str] = mapped_column(String(32))
-    session_path: Mapped[str] = mapped_column(String(255))
+
+    # Источник сессии — один из двух:
+    #   session_string: Telethon StringSession (приоритет, удобно для API-intake)
+    #   session_path: путь к файлу .session (для интерактивного логина)
+    session_string: Mapped[str | None] = mapped_column(Text, nullable=True)
+    session_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     # socks5://user:pass@host:port  или  http://user:pass@host:port  (null = без прокси)
     proxy: Mapped[str | None] = mapped_column(String(255), nullable=True)
 

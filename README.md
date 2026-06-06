@@ -14,7 +14,9 @@
 - **generator** — берёт топ контактов конкретного аккаунта, подмешивает его собственный стиль из истории и через Claude API генерит несколько вариантов первого сообщения.
 - **sender** — крутит пул: каждый драфт уходит через свой `account_id`, диспетчер делает round-robin между аккаунтами с учётом лимитов и FloodWait.
 
-Подробности по архитектуре пула — [`docs/MULTI_ACCOUNT.md`](docs/MULTI_ACCOUNT.md). Антиспам — [`docs/SAFETY.md`](docs/SAFETY.md). Переход на свою модель — [`docs/OWN_MODEL.md`](docs/OWN_MODEL.md).
+- **dashboard** — FastAPI веб-морда со статусами пула + JSON-API для приёма сессий из внешнего warmup-пайплайна.
+
+Подробности по архитектуре пула — [`docs/MULTI_ACCOUNT.md`](docs/MULTI_ACCOUNT.md). Антиспам — [`docs/SAFETY.md`](docs/SAFETY.md). Дашборд и intake API — [`docs/DASHBOARD.md`](docs/DASHBOARD.md). Переход на свою модель — [`docs/OWN_MODEL.md`](docs/OWN_MODEL.md).
 
 ## Поставить
 
@@ -71,6 +73,12 @@ make send-review
 
 Когда поверишь — `make send-auto` запустит сендер в фоне, он сам будет крутить пул круглыми сутками с паузами на ночь.
 
+## Дашборд и API
+
+`make dashboard` или `docker compose up -d` поднимет веб-морду на `http://<server>:8080`. Логин `admin`, пароль — `DASHBOARD_TOKEN` из `.env`. Видно статус каждого аккаунта, очередь, последние отправки.
+
+Параллельно работает JSON-API для интеграции с warmup-пайплайном. Когда внешняя система закончила прогрев очередного аккаунта — она пушит StringSession в `POST /api/accounts/intake`, и аккаунт сразу попадает в пул. Полная спека и примеры — в [`docs/DASHBOARD.md`](docs/DASHBOARD.md).
+
 ## Аккаунты и прокси
 
 CSV-формат (см. `accounts.example.csv`):
@@ -103,9 +111,10 @@ acc01,+79001234567,sessions/acc01.session,socks5://user:pass@1.2.3.4:1080,80,8
 ## Что дальше
 
 - [x] Мульти-аккаунт с прокси и диспетчером
+- [x] Web-dashboard со статусами + intake API для приёма сессий
+- [ ] Live-reload пула без рестарта sender'а
 - [ ] Health-checker: фоновая проверка `is_user_authorized` для всего пула
 - [ ] Сбор датасета из истории для файнтюна
 - [ ] LoRA Qwen 2.5 7B на собственном стиле, инференс через vLLM
-- [ ] Web-dashboard со статусами аккаунтов
 
 Цель — система, где модель пишет в твоём стиле так, что отличить нельзя, и при этом крутится полностью на своём железе через прогретый пул.

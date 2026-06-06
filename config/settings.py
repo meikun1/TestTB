@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     rampup_days: int = Field(14, alias="RAMPUP_DAYS")
     rampup_start_limit: int = Field(3, alias="RAMPUP_START_LIMIT")
 
+    # === Dashboard / API ===
+    dashboard_host: str = Field("0.0.0.0", alias="DASHBOARD_HOST")
+    dashboard_port: int = Field(8080, alias="DASHBOARD_PORT")
+    # Любой токен для basic-auth дашборда (логин: admin, пароль: токен)
+    # и Bearer для API. На проде сгенерируй длинный.
+    dashboard_token: str = Field("change-me", alias="DASHBOARD_TOKEN")
+
     # Хранилище
     db_path: str = Field("data/tg_assistant.db", alias="DB_PATH")
 

@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from loguru import logger
 from sqlalchemy import select
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 
 from config import settings, PROJECT_ROOT
 from src.utils import async_session, Account
@@ -41,11 +42,18 @@ def parse_proxy(url: str | None):
 
 def build_client(account: Account) -> TelegramClient:
     """Создаёт (но не подключает) TelegramClient для аккаунта."""
-    session_path = PROJECT_ROOT / account.session_path
-    session_path.parent.mkdir(parents=True, exist_ok=True)
+    if account.session_string:
+        session = StringSession(account.session_string)
+    else:
+        path = PROJECT_ROOT / (
+            account.session_path or f"sessions/{account.name}.session"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        session = str(path)
+
     proxy = parse_proxy(account.proxy) if settings.proxies_enabled else None
     return TelegramClient(
-        str(session_path),
+        session,
         settings.tg_api_id,
         settings.tg_api_hash,
         proxy=proxy,

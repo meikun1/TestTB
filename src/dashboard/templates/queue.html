@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Очередь — TG Assistant{% endblock %}
+{% block content %}
+<h1>Очередь черновиков</h1>
+
+<table>
+  <thead>
+    <tr><th>Аккаунт</th><th>pending</th><th>approved</th><th>sent</th><th>rejected</th><th>failed</th></tr>
+  </thead>
+  <tbody>
+    {% for name, statuses in grouped.items() %}
+    <tr>
+      <td><a href="/accounts/{{ name }}">{{ name }}</a></td>
+      <td>{{ statuses.get('pending', 0) }}</td>
+      <td>{{ statuses.get('approved', 0) }}</td>
+      <td>{{ statuses.get('sent', 0) }}</td>
+      <td>{{ statuses.get('rejected', 0) }}</td>
+      <td>{{ statuses.get('failed', 0) }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">Очередь пуста.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

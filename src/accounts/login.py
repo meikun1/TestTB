@@ -13,6 +13,7 @@ import asyncio
 
 from loguru import logger
 from sqlalchemy import select
+from telethon.sessions import StringSession
 
 from src.utils import async_session, Account
 from .pool import build_client
@@ -31,6 +32,12 @@ async def login_one(name: str) -> None:
     try:
         await client.start(phone=acc.phone)
         me = await client.get_me()
+        # сохраняем StringSession обратно в БД — будет переносимо между серверами
+        session_str = StringSession.save(client.session)
+        async with async_session() as session:
+            db_acc = await session.get(Account, acc.id)
+            db_acc.session_string = session_str
+            await session.commit()
         logger.success(
             f"[{acc.name}] авторизован как {me.first_name} (@{me.username})"
         )

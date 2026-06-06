@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Аккаунты — TG Assistant{% endblock %}
+{% block content %}
+<h1>Аккаунты ({{ accounts|length }})</h1>
+
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Телефон</th>
+      <th>Статус</th>
+      <th>Прокси</th>
+      <th>За час</th>
+      <th>За сутки</th>
+      <th>Flood до</th>
+      <th>Последняя отправка</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for a in accounts %}
+    <tr>
+      <td><a href="/accounts/{{ a.name }}">{{ a.name }}</a></td>
+      <td>{{ a.phone }}</td>
+      <td>
+        <span class="pill pill-{{ a.status }}">{{ a.status }}</span>
+        {% if a.status_reason %}<br><span class="muted">{{ a.status_reason }}</span>{% endif %}
+      </td>
+      <td>{% if a.has_proxy %}✓{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td>{{ a.sent_1h }}/{{ a.hourly_limit }}</td>
+      <td>{{ a.sent_24h }}/{{ a.daily_limit }}</td>
+      <td>{% if a.flood_until %}<span class="muted">{{ a.flood_until }}</span>{% else %}—{% endif %}</td>
+      <td>{% if a.last_send_at %}<span class="muted">{{ a.last_send_at }}</span>{% else %}—{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="muted">Пусто. Импортируй аккаунты через <code>make accounts-import</code> или POST /api/accounts/intake.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

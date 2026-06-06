@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ acc.name }} — TG Assistant{% endblock %}
+{% block content %}
+<p><a href="/accounts">← Все аккаунты</a></p>
+<h1>{{ acc.name }}</h1>
+
+<div class="stats">
+  <div class="stat-box"><h3><span class="pill pill-{{ acc.status }}">{{ acc.status }}</span></h3><p>Статус</p></div>
+  <div class="stat-box"><h3>{{ acc.sent_1h }}/{{ acc.hourly_limit }}</h3><p>За час</p></div>
+  <div class="stat-box"><h3>{{ acc.sent_24h }}/{{ acc.daily_limit }}</h3><p>За сутки</p></div>
+  <div class="stat-box"><h3>{{ contacts_count }}</h3><p>Контактов</p></div>
+</div>
+
+<h2 style="margin-top: 2rem;">Метаданные</h2>
+<dl>
+  <dt>Телефон</dt><dd>{{ acc.phone }}</dd>
+  <dt>Прокси</dt><dd>{% if acc.has_proxy %}настроен{% else %}—{% endif %}</dd>
+  {% if acc.status_reason %}<dt>Причина статуса</dt><dd>{{ acc.status_reason }}</dd>{% endif %}
+  {% if acc.flood_until %}<dt>Flood до</dt><dd>{{ acc.flood_until }}</dd>{% endif %}
+  {% if acc.last_send_at %}<dt>Последняя отправка</dt><dd>{{ acc.last_send_at }}</dd>{% endif %}
+</dl>
+
+<h2>Последние отправки</h2>
+<table>
+  <thead>
+    <tr><th>Когда</th><th>Контакт</th><th>Статус</th><th>Текст</th></tr>
+  </thead>
+  <tbody>
+  {% for r in recent %}
+    <tr>
+      <td><span class="muted">{{ r.sent_at }}</span></td>
+      <td>{{ r.contact }}</td>
+      <td>{% if r.success %}<span class="ok">✓</span>{% else %}<span class="fail">✗ {{ r.error or '' }}</span>{% endif %}</td>
+      <td>{{ r.text }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="4" class="muted">Отправок ещё не было.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

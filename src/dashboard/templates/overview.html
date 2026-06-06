@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Обзор — TG Assistant{% endblock %}
+{% block content %}
+<h1>Обзор пула</h1>
+
+<div class="stats">
+  <div class="stat-box"><h3>{{ total }}</h3><p>Всего аккаунтов</p></div>
+  <div class="stat-box"><h3 class="ok">{{ by_status.get('active', 0) }}</h3><p>Активных</p></div>
+  <div class="stat-box"><h3>{{ by_status.get('flood', 0) }}</h3><p>В flood-cooldown</p></div>
+  <div class="stat-box"><h3 class="fail">{{ by_status.get('banned', 0) }}</h3><p>Забанено</p></div>
+  <div class="stat-box"><h3>{{ contacts }}</h3><p>Контактов всего</p></div>
+</div>
+
+<h2 style="margin-top: 2rem;">Активность за последние 24 часа</h2>
+<div class="stats">
+  <div class="stat-box"><h3 class="ok">{{ sent_24h }}</h3><p>Успешно отправлено</p></div>
+  <div class="stat-box"><h3 class="fail">{{ failed_24h }}</h3><p>Ошибок</p></div>
+  <div class="stat-box"><h3>{{ pending }}</h3><p>Драфтов в очереди</p></div>
+</div>
+{% endblock %}

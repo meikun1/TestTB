@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Лог отправок — TG Assistant{% endblock %}
+{% block content %}
+<h1>Последние 200 отправок</h1>
+
+<table>
+  <thead>
+    <tr><th>Когда</th><th>Аккаунт</th><th>Контакт</th><th>Статус</th><th>Текст</th></tr>
+  </thead>
+  <tbody>
+  {% for i in items %}
+    <tr>
+      <td><span class="muted">{{ i.sent_at }}</span></td>
+      <td><a href="/accounts/{{ i.account }}">{{ i.account }}</a></td>
+      <td>{{ i.contact }}</td>
+      <td>{% if i.success %}<span class="ok">✓</span>{% else %}<span class="fail">✗ {{ i.error or '' }}</span>{% endif %}</td>
+      <td>{{ i.text }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="muted">Лог пуст.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

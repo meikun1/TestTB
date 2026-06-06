@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}TG Assistant{% endblock %}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <style>
+    body { max-width: 1200px; margin: 0 auto; padding: 1rem; }
+    nav ul { padding-left: 0; }
+    table { font-size: 0.9rem; }
+    .pill { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 0.5rem; font-size: 0.8rem; }
+    .pill-active { background: #1b5e20; color: white; }
+    .pill-flood  { background: #e65100; color: white; }
+    .pill-banned { background: #b71c1c; color: white; }
+    .pill-disabled { background: #555; color: white; }
+    .ok { color: #2e7d32; }
+    .fail { color: #b71c1c; }
+    .muted { color: #999; font-size: 0.85rem; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; }
+    .stat-box { padding: 1rem; border: 1px solid #444; border-radius: 0.5rem; }
+    .stat-box h3 { margin: 0; font-size: 2rem; }
+    .stat-box p { margin: 0; color: #aaa; }
+  </style>
+</head>
+<body>
+  <nav>
+    <ul>
+      <li><strong>TG Assistant</strong></li>
+    </ul>
+    <ul>
+      <li><a href="/">Обзор</a></li>
+      <li><a href="/accounts">Аккаунты</a></li>
+      <li><a href="/queue">Очередь</a></li>
+      <li><a href="/send-log">Лог отправок</a></li>
+    </ul>
+  </nav>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
