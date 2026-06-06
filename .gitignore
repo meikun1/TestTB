@@ -10,6 +10,8 @@ data/*.session-journal
 sessions/*.session
 sessions/*.session-journal
 accounts.csv
+attachments/*
+!attachments/.gitkeep
 logs/*.log
 .DS_Store
 .idea/

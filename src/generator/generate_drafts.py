@@ -1,11 +1,21 @@
 """
-Генерация черновиков сообщений для топ-N контактов.
-
-Использует Claude API. Позже заменим на локальный inference (vLLM + LoRA).
+Генерация черновиков сообщений + опционально прикрепление файла/ссылки.
 
 Запуск:
-    python -m src.generator.generate_drafts --top 10 --goal personal
-    python -m src.generator.generate_drafts --top 10 --goal project --hook "запускаю новый сервис для X"
+    python -m src.generator.generate_drafts --top 10
+    python -m src.generator.generate_drafts --top 10 --account acc01 \
+        --attach photo:attachments/offer.png --attach-caption "оффер"
+
+Аргумент --attach задаёт вложение, которое сохранится во ВСЕ создаваемые
+драфты этого запуска. Формат: <kind>:<ref>
+  photo:attachments/offer.png
+  video:attachments/promo.mp4
+  document:attachments/brochure.pdf
+  voice:attachments/intro.ogg
+  link:https://example.com/offer
+
+Если хочешь персонализировать вложение под контакт — это делается отдельным
+скриптом, который пишет напрямую в Draft.attachment_*.
 """
 import argparse
 import asyncio
@@ -15,20 +25,23 @@ from datetime import datetime
 
 from anthropic import AsyncAnthropic
 from loguru import logger
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import settings
-from src.utils import async_session, Contact, Message, Draft
-from .prompts import SYSTEM_PROMPT, USER_TEMPLATE
+from src.utils import async_session, Account, Contact, Message, Draft
+from .prompts import SYSTEM_PROMPT, USER_TEMPLATE, attachment_hint
 
 
 client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-MODEL = "claude-opus-4-7"
+MODEL = settings.anthropic_model
+
+
+def func_len(col):
+    return func.length(col)
 
 
 async def collect_style_examples(session, account_id: int, limit: int = 8) -> str:
-    """Собирает несколько свежих реплик данного аккаунта — для few-shot стиля."""
     result = await session.execute(
         select(Message.text)
         .join(Contact, Contact.id == Message.contact_id)
@@ -43,14 +56,7 @@ async def collect_style_examples(session, account_id: int, limit: int = 8) -> st
     return "\n".join(f"- {t}" for t in texts[:limit])
 
 
-def func_len(col):
-    # SQLite LENGTH() — короткий хелпер
-    from sqlalchemy import func
-    return func.length(col)
-
-
 async def collect_history(session, contact_id: int, limit: int = 15) -> str:
-    """Последние N сообщений по контакту, новые сверху."""
     result = await session.execute(
         select(Message)
         .where(Message.contact_id == contact_id)
@@ -74,7 +80,6 @@ async def call_llm(system: str, user: str) -> dict:
         messages=[{"role": "user", "content": user}],
     )
     text = resp.content[0].text.strip()
-    # Срезаем возможные ```json ... ``` обёртки
     if text.startswith("```"):
         text = text.split("```", 2)[1]
         if text.startswith("json"):
@@ -83,14 +88,35 @@ async def call_llm(system: str, user: str) -> dict:
     return json.loads(text)
 
 
-async def generate_for_contact(session, contact: Contact, goal: str, hook: str) -> None:
+def _parse_attach(s: str | None) -> tuple[str | None, str | None]:
+    """photo:path/foo.png → ('photo', 'path/foo.png')"""
+    if not s:
+        return None, None
+    if ":" not in s:
+        raise ValueError(f"--attach должен быть kind:ref, получил: {s}")
+    kind, ref = s.split(":", 1)
+    valid = {"photo", "video", "audio", "voice", "document", "link"}
+    if kind not in valid:
+        raise ValueError(f"attach kind должен быть одним из {valid}, получил {kind}")
+    return kind, ref
+
+
+async def generate_for_contact(
+    session,
+    contact: Contact,
+    goal: str,
+    hook: str,
+    attach_kind: str | None,
+    attach_ref: str | None,
+    attach_caption: str | None,
+    attach_delay: int,
+) -> None:
     style_examples = await collect_style_examples(session, contact.account_id)
     history = await collect_history(session, contact.id)
 
     days_since = (
         (datetime.utcnow() - contact.last_msg_at).days
-        if contact.last_msg_at
-        else 999
+        if contact.last_msg_at else 999
     )
     last_author = "меня" if contact.last_msg_from_me else "него"
     name = contact.first_name or contact.username or "контакт"
@@ -104,6 +130,7 @@ async def generate_for_contact(session, contact: Contact, goal: str, hook: str) 
         history=history,
         goal=goal,
         hook=hook or "(нет специального повода)",
+        attachment_hint=attachment_hint(attach_kind),
     )
 
     try:
@@ -124,19 +151,20 @@ async def generate_for_contact(session, contact: Contact, goal: str, hook: str) 
                 text=variant["text"],
                 variant_label=variant.get("label"),
                 status="pending",
+                attachment_kind=attach_kind,
+                attachment_ref=attach_ref,
+                attachment_caption=attach_caption,
+                attachment_delay_seconds=attach_delay,
             )
         )
     logger.success(f"Drafts for {name}: {len(result.get('variants', []))}")
 
 
-async def main(top_n: int, goal: str, hook: str, account_name: str | None) -> None:
-    """
-    Генерирует черновики для топ-N контактов.
-
-    Без --account: top_n берётся ПО КАЖДОМУ аккаунту отдельно (для масштаба).
-    С --account <name>: только контакты этого аккаунта.
-    """
-    from src.utils import Account
+async def main(
+    top_n: int, goal: str, hook: str, account_name: str | None,
+    attach: str | None, attach_caption: str | None, attach_delay: int,
+) -> None:
+    attach_kind, attach_ref = _parse_attach(attach)
 
     async with async_session() as session:
         acc_query = select(Account).where(Account.enabled.is_(True))
@@ -159,9 +187,15 @@ async def main(top_n: int, goal: str, hook: str, account_name: str | None) -> No
                 )
             ).scalars().all()
 
-            logger.info(f"[{acc.name}] Generating drafts for {len(contacts)} contacts...")
+            logger.info(
+                f"[{acc.name}] generating drafts for {len(contacts)} contacts"
+                + (f" (+attach={attach_kind})" if attach_kind else "")
+            )
             for c in contacts:
-                await generate_for_contact(session, c, goal, hook)
+                await generate_for_contact(
+                    session, c, goal, hook,
+                    attach_kind, attach_ref, attach_caption, attach_delay,
+                )
                 await session.commit()
 
 
@@ -170,16 +204,23 @@ if __name__ == "__main__":
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument(
         "--goal",
-        choices=["personal", "project", "reactivate"],
+        choices=["personal", "project", "reactivate", "offer"],
         default="personal",
     )
     parser.add_argument("--hook", type=str, default="")
+    parser.add_argument("--account", type=str, default=None)
     parser.add_argument(
-        "--account",
-        type=str,
-        default=None,
-        help="Только для одного аккаунта; иначе по всем enabled",
+        "--attach", type=str, default=None,
+        help="kind:ref, напр. photo:attachments/offer.png или link:https://...",
+    )
+    parser.add_argument("--attach-caption", type=str, default=None)
+    parser.add_argument(
+        "--attach-delay", type=int, default=15,
+        help="секунд между текстом и вложением; 0 = вложение caption'ом",
     )
     args = parser.parse_args()
 
-    asyncio.run(main(args.top, args.goal, args.hook, args.account))
+    asyncio.run(main(
+        args.top, args.goal, args.hook, args.account,
+        args.attach, args.attach_caption, args.attach_delay,
+    ))

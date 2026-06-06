@@ -20,8 +20,9 @@ from src.accounts.pool import build_client
 from src.utils import init_db, async_session, Account, Contact, Message
 
 
-# Сколько последних сообщений вытаскивать на каждый диалог.
-MESSAGES_PER_DIALOG = 200
+# Сколько последних сообщений вытаскивать на каждый диалог (можно переопределить в .env).
+from config import settings as _settings  # noqa: E402
+MESSAGES_PER_DIALOG = _settings.fetcher_messages_per_dialog
 
 
 async def upsert_contact(session, account_id: int, user: User) -> Contact:

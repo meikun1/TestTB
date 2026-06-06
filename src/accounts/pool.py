@@ -1,9 +1,12 @@
 """
-Пул аккаунтов: подгружает их из БД, держит подключённые TelegramClient'ы.
+Пул аккаунтов с шардингом и live-reload через Redis.
 
-Каждый аккаунт получает свой session-файл/StringSession и (опционально) свой
-прокси. Поддерживает live-reload: фоновая задача периодически перечитывает
-БД, подключает новые intake-аккаунты и отключает забаненные.
+Каждый sender-воркер запускается с параметром shard_id ∈ [0..WORKER_COUNT-1]
+и держит подключённые TelegramClient'ы только для тех аккаунтов, у которых
+account.id % WORKER_COUNT == shard_id.
+
+При публикации сигнала в Redis-канал POOL_RELOAD пул мгновенно перечитывает
+БД (без 5-минутной задержки опроса).
 """
 from __future__ import annotations
 
@@ -16,17 +19,16 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 from config import settings, PROJECT_ROOT
-from src.utils import async_session, Account
+from src.utils import async_session, Account, bus
 
 
-# Поля, изменение которых требует пересоздания клиента
 _REBUILD_FIELDS = ("session_string", "session_path", "proxy")
 
 
 def parse_proxy(url: str | None):
     if not url:
         return None
-    import socks  # noqa: PLC0415  (PySocks)
+    import socks  # noqa: PLC0415
 
     u = urlparse(url)
     scheme_map = {
@@ -42,7 +44,6 @@ def parse_proxy(url: str | None):
 
 
 def build_client(account: Account) -> TelegramClient:
-    """Создаёт (но не подключает) TelegramClient для аккаунта."""
     if account.session_string:
         session = StringSession(account.session_string)
     else:
@@ -62,13 +63,12 @@ def build_client(account: Account) -> TelegramClient:
 
 
 async def _connect_account(acc: Account) -> TelegramClient | None:
-    """Подключает один аккаунт. Возвращает клиент или None при ошибке."""
     try:
         client = build_client(acc)
         await client.connect()
         if not await client.is_user_authorized():
             logger.warning(
-                f"[{acc.name}] не авторизован, пропущен. "
+                f"[{acc.name}] не авторизован — пропускаю. "
                 f"Запусти: python -m src.accounts.login {acc.name}"
             )
             await client.disconnect()
@@ -80,45 +80,52 @@ async def _connect_account(acc: Account) -> TelegramClient | None:
 
 
 class AccountPool:
-    """Держит живые клиенты для активных аккаунтов."""
+    """
+    Шардированный пул. shard_id=None означает «все аккаунты» (для dashboard/fetcher).
+    """
 
-    def __init__(self) -> None:
+    def __init__(self, shard_id: int | None = None, shard_count: int | None = None) -> None:
         self._clients: dict[int, TelegramClient] = {}
         self._accounts: dict[int, Account] = {}
         self._refresh_task: asyncio.Task | None = None
+        self._listen_task: asyncio.Task | None = None
+        self.shard_id = shard_id
+        self.shard_count = shard_count or settings.worker_count
+
+    def _in_my_shard(self, account_id: int) -> bool:
+        if self.shard_id is None:
+            return True
+        return account_id % self.shard_count == self.shard_id
 
     async def load(self) -> None:
-        """Первоначальная загрузка пула."""
         if not settings.proxies_enabled:
             logger.warning(
                 "PROXIES_ENABLED=false — все аккаунты идут напрямую с IP сервера. "
                 "Только для теста, не для масштаба."
             )
+        if self.shard_id is not None:
+            logger.info(
+                f"Pool shard {self.shard_id}/{self.shard_count} initializing"
+            )
         await self.refresh(initial=True)
         logger.success(f"Пул собран: {len(self._clients)} активных аккаунтов")
 
     async def refresh(self, initial: bool = False) -> None:
-        """
-        Сверяет пул с БД:
-          - подключает новые enabled-аккаунты
-          - отключает те, что стали disabled/banned/удалены
-          - пересобирает клиент, если сменились session/proxy
-        """
         async with async_session() as session:
-            rows = (await session.execute(
-                select(Account).where(Account.enabled.is_(True))
-            )).scalars().all()
+            q = select(Account).where(Account.enabled.is_(True))
+            rows = (await session.execute(q)).scalars().all()
 
-        db_by_id = {a.id: a for a in rows}
+        # фильтруем по шарду
+        db_by_id = {a.id: a for a in rows if self._in_my_shard(a.id)}
 
-        # 1) Удалённые / disabled / больше не enabled — отключаем
+        # удалённые/вышедшие из шарда
         gone = [aid for aid in self._clients if aid not in db_by_id]
         for aid in gone:
             name = self._accounts.get(aid).name if self._accounts.get(aid) else aid
             logger.info(f"[{name}] выведен из пула")
             await self._disconnect(aid)
 
-        # 2) Существующие — проверяем что не изменились session/proxy
+        # существующие — проверка на rebuild
         for aid, db_acc in db_by_id.items():
             if aid not in self._clients:
                 continue
@@ -134,10 +141,9 @@ class AccountPool:
                     self._clients[aid] = client
                     self._accounts[aid] = db_acc
             else:
-                # Лимиты и т.п. — просто обновляем кеш без рестарта клиента
                 self._accounts[aid] = db_acc
 
-        # 3) Новые — подключаем
+        # новые
         new_ids = [aid for aid in db_by_id if aid not in self._clients]
         for aid in new_ids:
             acc = db_by_id[aid]
@@ -160,15 +166,18 @@ class AccountPool:
                 pass
 
     def start_background_refresh(self) -> None:
-        """Запускает фоновую задачу live-reload пула."""
+        """Подписка на Redis + fallback-опрос БД."""
+        self._refresh_task = asyncio.create_task(self._poll_loop())
+        self._listen_task = asyncio.create_task(self._redis_loop())
+        logger.info(
+            f"Live-reload: Redis-подписка + fallback опрос каждые "
+            f"{settings.pool_reload_interval_seconds}s"
+        )
+
+    async def _poll_loop(self) -> None:
         interval = settings.pool_reload_interval_seconds
         if interval <= 0:
-            logger.info("Live-reload отключён (POOL_RELOAD_INTERVAL_SECONDS=0)")
             return
-        self._refresh_task = asyncio.create_task(self._refresh_loop(interval))
-        logger.info(f"Live-reload пула: каждые {interval}s")
-
-    async def _refresh_loop(self, interval: int) -> None:
         while True:
             try:
                 await asyncio.sleep(interval)
@@ -176,7 +185,24 @@ class AccountPool:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.error(f"Pool refresh failed: {e}")
+                logger.error(f"Pool poll refresh failed: {e}")
+
+    async def _redis_loop(self) -> None:
+        try:
+            async for msg in bus.subscribe_pool_reload():
+                # Если событие про конкретный account_id — проверь шард
+                aid = msg.get("account_id")
+                if aid is not None and not self._in_my_shard(aid):
+                    continue
+                logger.info(f"Redis reload signal: {msg.get('reason')}")
+                try:
+                    await self.refresh()
+                except Exception as e:
+                    logger.error(f"Pool live-refresh failed: {e}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Redis listen loop crashed: {e}")
 
     def get_client(self, account_id: int) -> TelegramClient | None:
         return self._clients.get(account_id)
@@ -188,13 +214,15 @@ class AccountPool:
         return list(self._clients.keys())
 
     async def close(self) -> None:
-        if self._refresh_task is not None:
-            self._refresh_task.cancel()
-            try:
-                await self._refresh_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._refresh_task = None
+        for task in (self._refresh_task, self._listen_task):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        self._refresh_task = None
+        self._listen_task = None
 
         for client in list(self._clients.values()):
             try:
@@ -203,3 +231,4 @@ class AccountPool:
                 pass
         self._clients.clear()
         self._accounts.clear()
+        await bus.close_bus()

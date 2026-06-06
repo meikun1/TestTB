@@ -1,29 +1,80 @@
+x-app-base: &app-base
+  build: .
+  image: tg-assistant:latest
+  env_file: .env
+  volumes:
+    - ./data:/app/data
+    - ./logs:/app/logs
+    - ./sessions:/app/sessions
+    - ./attachments:/app/attachments
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_started
+  restart: unless-stopped
+
 services:
-  sender:
-    build: .
-    image: tg-assistant:latest
-    container_name: tg-assistant-sender
+  postgres:
+    image: postgres:16-alpine
+    container_name: tg-postgres
     restart: unless-stopped
-    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tg}
+      POSTGRES_DB: ${POSTGRES_DB:-tg_assistant}
+    command:
+      - postgres
+      - -c
+      - max_connections=400
+      - -c
+      - shared_buffers=512MB
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./sessions:/app/sessions
-    stdin_open: true
-    tty: true
-    command: python -m src.sender.send_queue --mode auto
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-tg}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: tg-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - redis_data:/data
 
   dashboard:
-    image: tg-assistant:latest
-    container_name: tg-assistant-dashboard
-    restart: unless-stopped
-    depends_on:
-      - sender
-    env_file: .env
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./sessions:/app/sessions
+    <<: *app-base
+    container_name: tg-dashboard
     ports:
       - "${DASHBOARD_PORT:-8080}:8080"
     command: python -m src.dashboard.app
+
+  fetcher:
+    <<: *app-base
+    container_name: tg-fetcher
+    command: python -m src.fetcher.service
+
+  healthcheck:
+    <<: *app-base
+    container_name: tg-healthcheck
+    command: python -m src.monitoring.healthcheck
+
+  # Sender-воркеры. По умолчанию 10 штук — синхронизировано с WORKER_COUNT=10.
+  # Если хочешь больше/меньше — поправь WORKER_COUNT в .env и здесь продублируй блок.
+  sender-0:  { <<: *app-base, container_name: tg-sender-0, command: python -m src.sender.send_queue --mode auto --shard 0 }
+  sender-1:  { <<: *app-base, container_name: tg-sender-1, command: python -m src.sender.send_queue --mode auto --shard 1 }
+  sender-2:  { <<: *app-base, container_name: tg-sender-2, command: python -m src.sender.send_queue --mode auto --shard 2 }
+  sender-3:  { <<: *app-base, container_name: tg-sender-3, command: python -m src.sender.send_queue --mode auto --shard 3 }
+  sender-4:  { <<: *app-base, container_name: tg-sender-4, command: python -m src.sender.send_queue --mode auto --shard 4 }
+  sender-5:  { <<: *app-base, container_name: tg-sender-5, command: python -m src.sender.send_queue --mode auto --shard 5 }
+  sender-6:  { <<: *app-base, container_name: tg-sender-6, command: python -m src.sender.send_queue --mode auto --shard 6 }
+  sender-7:  { <<: *app-base, container_name: tg-sender-7, command: python -m src.sender.send_queue --mode auto --shard 7 }
+  sender-8:  { <<: *app-base, container_name: tg-sender-8, command: python -m src.sender.send_queue --mode auto --shard 8 }
+  sender-9:  { <<: *app-base, container_name: tg-sender-9, command: python -m src.sender.send_queue --mode auto --shard 9 }
+
+volumes:
+  postgres_data:
+  redis_data:

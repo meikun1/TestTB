@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field as PydField
 from sqlalchemy import select, func, desc
 
 from config import settings, PROJECT_ROOT
-from src.utils import async_session, Account, Contact, Draft, SendLog
+from src.utils import async_session, Account, Contact, Draft, SendLog, bus
 from .auth import require_auth
 
 
@@ -258,16 +258,28 @@ async def intake(payload: IntakeRequest, _: str = Depends(require_auth)):
             existing.status = "active"
             existing.status_reason = None
             existing.flood_until = None
+            # шард-id на случай первого назначения
+            existing.shard_id = existing.id % settings.worker_count
             await session.commit()
-            return IntakeResponse(
-                account_id=existing.id, name=existing.name, created=False
-            )
+            account_id = existing.id
+            created = False
+        else:
+            acc = Account(name=payload.name, **fields)
+            session.add(acc)
+            await session.commit()
+            await session.refresh(acc)
+            # шард-id присваиваем сразу
+            acc.shard_id = acc.id % settings.worker_count
+            await session.commit()
+            account_id = acc.id
+            created = True
 
-        acc = Account(name=payload.name, **fields)
-        session.add(acc)
-        await session.commit()
-        await session.refresh(acc)
-        return IntakeResponse(account_id=acc.id, name=acc.name, created=True)
+    # уведомить sender-воркеры что в пуле новый/обновлённый аккаунт
+    await bus.publish_pool_reload(
+        reason=f"intake:{payload.name}",
+        account_id=account_id,
+    )
+    return IntakeResponse(account_id=account_id, name=payload.name, created=created)
 
 
 @app.get("/api/accounts")

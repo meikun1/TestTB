@@ -15,7 +15,7 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p data logs sessions
+RUN mkdir -p data logs sessions attachments
 
 # По умолчанию запускаем sender в auto-режиме.
 # Для review/fetch/score/generate переопредели command в docker compose.

@@ -14,9 +14,10 @@
 - **generator** — берёт топ контактов конкретного аккаунта, подмешивает его собственный стиль из истории и через Claude API генерит несколько вариантов первого сообщения.
 - **sender** — крутит пул: каждый драфт уходит через свой `account_id`, диспетчер делает round-robin между аккаунтами с учётом лимитов и FloodWait.
 
-- **dashboard** — FastAPI веб-морда со статусами пула + JSON-API для приёма сессий из внешнего warmup-пайплайна.
+- **dashboard** — FastAPI веб-морда со статусами пула + JSON-API для приёма сессий извне.
+- **monitoring** — фоновый health-checker + алерты в Telegram через бота.
 
-Подробности по архитектуре пула — [`docs/MULTI_ACCOUNT.md`](docs/MULTI_ACCOUNT.md). Антиспам — [`docs/SAFETY.md`](docs/SAFETY.md). Дашборд и intake API — [`docs/DASHBOARD.md`](docs/DASHBOARD.md). Переход на свою модель — [`docs/OWN_MODEL.md`](docs/OWN_MODEL.md).
+**Архитектура под 500+ аккаунтов** (Postgres + Redis + N sender-воркеров + фоновый fetcher + healthcheck) расписана в [`docs/SCALE_500.md`](docs/SCALE_500.md). Антиспам — [`docs/SAFETY.md`](docs/SAFETY.md). Мульти-аккаунт-базис — [`docs/MULTI_ACCOUNT.md`](docs/MULTI_ACCOUNT.md). Дашборд и intake API — [`docs/DASHBOARD.md`](docs/DASHBOARD.md). Своя модель — [`docs/OWN_MODEL.md`](docs/OWN_MODEL.md).
 
 ## Поставить
 
