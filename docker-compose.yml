@@ -1,0 +1,13 @@
+services:
+  tg-assistant:
+    build: .
+    image: tg-assistant:latest
+    container_name: tg-assistant
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    stdin_open: true
+    tty: true
+    command: python -m src.sender.send_queue --mode auto

@@ -14,19 +14,28 @@ src/
 └── utils/        # Логирование, хранилище, БД
 ```
 
-## Установка
+## Требования
+
+- Python 3.10+
+- (опционально) Docker + docker compose
+
+## Быстрый старт на сервере
 
 ```bash
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+git clone <repo-url> tg-assistant
+cd tg-assistant
+./install.sh           # venv + зависимости + папки + .env из шаблона
+nano .env              # заполнить ключи
+source venv/bin/activate
 ```
+
+Подробности по деплою (Docker, systemd, бэкапы, обновление) — в [`deploy/README.md`](deploy/README.md).
 
 ## Настройка
 
 1. Получи `API_ID` и `API_HASH` на https://my.telegram.org/apps
 2. Получи `ANTHROPIC_API_KEY` на https://console.anthropic.com (на первое время)
-3. Скопируй `.env.example` в `.env` и заполни ключи
+3. Заполни `.env` (создан автоматически из `.env.example`)
 
 ## Запуск
 
@@ -42,6 +51,15 @@ python -m src.generator.generate_drafts --top 10
 
 # Шаг 4: запустить sender в полу-ручном режиме (тебя спросят перед каждой отправкой)
 python -m src.sender.send_queue --mode review
+```
+
+Или через Make:
+
+```bash
+make fetch
+make score
+make generate TOP=10 GOAL=personal
+make send-review
 ```
 
 ## Безопасность аккаунта

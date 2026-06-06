@@ -1,0 +1,19 @@
+[Unit]
+Description=TG Assistant sender queue
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tgbot
+Group=tgbot
+WorkingDirectory=/opt/tg-assistant
+EnvironmentFile=/opt/tg-assistant/.env
+ExecStart=/opt/tg-assistant/venv/bin/python -m src.sender.send_queue --mode auto
+Restart=on-failure
+RestartSec=30
+StandardOutput=append:/opt/tg-assistant/logs/sender.log
+StandardError=append:/opt/tg-assistant/logs/sender.err.log
+
+[Install]
+WantedBy=multi-user.target
