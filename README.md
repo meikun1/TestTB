@@ -155,6 +155,110 @@ make generate ATTACH=link:https://example.com/offer
 
 Параметр `DELAY=15` (или 0 чтобы вложение пошло caption'ом).
 
+## Intake API — приём аккаунтов потоком
+
+Если у тебя поток новых аккаунтов из warmup-пайплайна — не нужно каждый раз
+готовить CSV. Поднимаешь intake HTTP-сервис, и твой пайплайн дёргает его
+по каждому новому аккаунту:
+
+```bash
+make intake          # поднять только intake-контейнер
+make intake-logs     # тейлить логи
+```
+
+Сервис висит на `INTAKE_PORT` (по умолчанию 8090). Защищён Bearer-токеном
+из `INTAKE_TOKEN` (`.env`).
+
+### POST /api/accounts/intake
+
+```bash
+curl -X POST http://your-server:8090/api/accounts/intake \
+  -H "Authorization: Bearer $INTAKE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "acc01",
+    "phone": "+998901234567",
+    "session_string": "1BVtsOK4Bu...",
+    "device_model": "iPhone 14",
+    "system_version": "iOS 16.5.1",
+    "app_version": "10.2.0",
+    "lang_code": "ru",
+    "system_lang_code": "ru-UZ",
+    "auto_fetch_contacts": true
+  }'
+```
+
+Ответ:
+```json
+{
+  "account_id": 42,
+  "name": "acc01",
+  "created": true,
+  "status": "active",
+  "reason": null,
+  "contacts_total": 245,
+  "contacts_new": 245,
+  "duration_seconds": 18.3
+}
+```
+
+Поведение:
+1. Валидация UZ-номера + полноты fingerprint (как в CSV-импорте)
+2. Если новый — создаёт Account, если существует — апдейтит поля
+3. Подключается через Telethon → email-verify автоматом если нужно
+4. Geo-check (GetNearestDc должен вернуть UZ)
+5. Если `auto_fetch_contacts=true` (default) — выкачивает контакты
+6. Сохраняет свежий StringSession обратно (если был обновлён)
+
+Timeout — `INTAKE_SYNC_TIMEOUT_SECONDS` (180 сек по умолчанию). Если
+fetch контактов занимает больше — поставь `auto_fetch_contacts=false` и
+запускай выгрузку отдельно.
+
+**Поток новых аккаунтов:**
+
+Твой warmup-пайплайн по мере появления нового прогретого акк дёргает
+этот endpoint. Аккаунт сразу попадает в БД с `status='active'`, и при
+следующем цикле `make generate` — драфты для его контактов попадут в
+очередь, а sender'ы их разошлют.
+
+### Остальные endpoints
+
+| Method | URL | Что |
+|---|---|---|
+| GET | `/api/accounts` | Список со статусами и contacts_count (?status_=active для фильтра) |
+| GET | `/api/accounts/{name}` | Один аккаунт |
+| POST | `/api/accounts/{name}/disable` | enabled=false |
+| POST | `/api/accounts/{name}/enable` | enabled=true, статус → active если был banned/disabled |
+| GET | `/api/stats` | общая статистика пула: счётчики по статусам, активность за 1ч/24ч |
+| GET | `/api/healthz` | без auth — liveness check для оркестратора |
+
+### Пример Python-клиента для warmup-пайплайна
+
+```python
+import httpx
+import os
+
+API_URL = "http://your-server:8090"
+TOKEN = os.environ["INTAKE_TOKEN"]
+
+def push_account(name, phone, session_string, device_info):
+    resp = httpx.post(
+        f"{API_URL}/api/accounts/intake",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        json={
+            "name": name,
+            "phone": phone,
+            "session_string": session_string,
+            **device_info,  # device_model, system_version, app_version, lang_code, system_lang_code
+        },
+        timeout=200,
+    )
+    resp.raise_for_status()
+    return resp.json()
+```
+
+Идемпотентно: повторный POST с тем же `name` обновит запись, не создаст дубль.
+
 ## Email-верификация
 
 Когда Telegram при логине требует email-подтверждение, система автоматически:

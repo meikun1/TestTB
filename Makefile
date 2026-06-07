@@ -41,6 +41,12 @@ generate:
 optout:
 	docker compose up -d optout
 
+intake:
+	docker compose up -d intake
+
+intake-logs:
+	docker compose logs -f intake
+
 test-imap:
 	docker compose run --rm sender-0 python -m src.email_verify
 

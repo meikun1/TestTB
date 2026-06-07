@@ -79,6 +79,16 @@ class Settings(BaseSettings):
     captcha_solver: str = Field("manual", alias="CAPTCHA_SOLVER")
     captcha_timeout_seconds: int = Field(300, alias="CAPTCHA_TIMEOUT_SECONDS")
 
+    # === Intake API (для приёма аккаунтов потоком из warmup-пайплайна) ===
+    intake_host: str = Field("0.0.0.0", alias="INTAKE_HOST")
+    intake_port: int = Field(8090, alias="INTAKE_PORT")
+    # Bearer token для авторизации. Сгенерируй openssl rand -hex 32
+    intake_token: str = Field("change-me", alias="INTAKE_TOKEN")
+    # Максимум секунд на синхронный intake (Telethon + fetch контактов)
+    intake_sync_timeout_seconds: int = Field(
+        180, alias="INTAKE_SYNC_TIMEOUT_SECONDS"
+    )
+
     # === Алерты ===
     alert_bot_token: str = Field("", alias="ALERT_BOT_TOKEN")
     alert_chat_id: str = Field("", alias="ALERT_CHAT_ID")

@@ -164,16 +164,27 @@ async def _upsert_account(row: dict) -> Account | None:
         return acc
 
 
-async def _ensure_authorized(client, account: Account) -> bool:
+async def _ensure_authorized(client, account: Account, interactive: bool = True) -> bool:
     """
-    Подключение + проверка авторизации. Если требуется email — обработать.
-    Возвращает True если аккаунт авторизован.
+    Подключение + проверка авторизации. Email-подтверждение обрабатывается
+    автоматом через IMAP в любом режиме.
+
+    interactive=True (CLI): если session мёртвая — попросит SMS/2FA через input()
+    interactive=False (API): если session мёртвая — сразу возвращает False.
+                              Внешний источник (warmup) должен присылать живые сессии.
     """
     await client.connect()
     if await client.is_user_authorized():
         return True
 
-    # session_string не валиден / просрочен — пробуем re-auth
+    if not interactive:
+        logger.warning(
+            f"[{account.name}] session_string не авторизован — non-interactive mode, "
+            f"возвращаю False. Перезалей свежую StringSession через intake API."
+        )
+        return False
+
+    # CLI режим — fallback на phone-логин
     logger.warning(f"[{account.name}] session_string не авторизован, "
                    "пробую заново через phone")
     try:
@@ -305,21 +316,74 @@ async def _fetch_contacts(client, account: Account) -> tuple[int, int]:
     return total, new
 
 
-async def import_one(row: dict) -> None:
+async def import_one(
+    row: dict,
+    interactive: bool = True,
+    fetch_contacts: bool = True,
+) -> dict:
+    """
+    Импортирует один аккаунт. Используется и в CSV-импорте, и в API.
+
+    interactive — допустим ли input() для SMS/2FA (False для API)
+    fetch_contacts — выкачать ли контакты сразу после auth
+
+    Возвращает dict со статусом операции:
+        {
+            "account_id": int | None,
+            "name": str,
+            "created": bool,            # True если новый, False если update
+            "status": str,              # active | disabled | geo_mismatch
+            "reason": str | None,
+            "contacts_total": int,      # 0 если fetch_contacts=False
+            "contacts_new": int,
+        }
+    """
+    name = (row.get("name") or "").strip()
+    result = {
+        "account_id": None,
+        "name": name,
+        "created": False,
+        "status": "disabled",
+        "reason": None,
+        "contacts_total": 0,
+        "contacts_new": 0,
+    }
+
+    # Проверить — это создание или апдейт
+    async with async_session() as session:
+        pre_existing = (await session.execute(
+            select(Account).where(Account.name == name)
+        )).scalar_one_or_none()
+    result["created"] = pre_existing is None
+
     acc = await _upsert_account(row)
     if acc is None:
-        return
+        # _upsert_account уже залогировал причину; либо invalid_uz_number
+        # либо missing_real_fingerprint
+        async with async_session() as session:
+            existing = (await session.execute(
+                select(Account).where(Account.name == name)
+            )).scalar_one_or_none()
+            if existing:
+                result["account_id"] = existing.id
+                result["status"] = existing.status
+                result["reason"] = existing.status_reason
+        return result
+
+    result["account_id"] = acc.id
 
     client = build_client(acc)
     try:
-        if not await _ensure_authorized(client, acc):
+        if not await _ensure_authorized(client, acc, interactive=interactive):
             async with async_session() as session:
                 db_acc = await session.get(Account, acc.id)
                 db_acc.status = "disabled"
                 db_acc.status_reason = "auth_failed"
                 db_acc.enabled = False
                 await session.commit()
-            return
+            result["status"] = "disabled"
+            result["reason"] = "auth_failed"
+            return result
 
         # Geo-check
         geo_mismatch = await _geo_check(client, acc)
@@ -331,22 +395,33 @@ async def import_one(row: dict) -> None:
                 db_acc.status_reason = geo_mismatch
                 db_acc.enabled = False
                 await session.commit()
-            return
+            result["status"] = "geo_mismatch"
+            result["reason"] = geo_mismatch
+            return result
 
-        # Сохранить актуальный StringSession обратно (на случай если был обновлён при re-auth)
+        # Сохранить актуальный StringSession обратно
         from telethon.sessions import StringSession
         try:
             new_session = StringSession.save(client.session)
             async with async_session() as session:
                 db_acc = await session.get(Account, acc.id)
                 db_acc.session_string = new_session
+                db_acc.status = "active"
+                db_acc.status_reason = None
+                db_acc.enabled = True
                 await session.commit()
         except Exception as e:
             logger.debug(f"[{acc.name}] couldn't refresh session_string: {e}")
 
-        # Выгрузить контакты
-        total, new = await _fetch_contacts(client, acc)
-        logger.success(f"[{acc.name}] контакты: {total} всего, {new} новых")
+        # Выгрузить контакты (опционально)
+        if fetch_contacts:
+            total, new = await _fetch_contacts(client, acc)
+            logger.success(f"[{acc.name}] контакты: {total} всего, {new} новых")
+            result["contacts_total"] = total
+            result["contacts_new"] = new
+
+        result["status"] = "active"
+        return result
 
     except Exception as e:
         logger.error(f"[{acc.name}] import failed: {e}")
@@ -356,6 +431,9 @@ async def import_one(row: dict) -> None:
             db_acc.status_reason = f"import_error: {str(e)[:200]}"
             db_acc.enabled = False
             await session.commit()
+        result["status"] = "disabled"
+        result["reason"] = f"import_error: {str(e)[:200]}"
+        return result
     finally:
         try:
             await client.disconnect()

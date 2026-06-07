@@ -41,6 +41,14 @@ services:
     container_name: tg-optout
     command: python -m src.optout
 
+  # HTTP API для приёма аккаунтов потоком (warmup-пайплайн → сюда)
+  intake:
+    <<: *app-base
+    container_name: tg-intake
+    command: python -m src.intake_api
+    ports:
+      - "${INTAKE_PORT:-8090}:8090"
+
   # 10 sender-воркеров. Если меняешь WORKER_COUNT в .env — подгоняй число
   # sender-N сервисов синхронно.
   sender-0: { <<: *app-base, container_name: tg-sender-0, command: python -m src.sender --shard 0 }
