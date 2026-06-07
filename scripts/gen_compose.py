@@ -107,6 +107,16 @@ INTAKE_BLOCK = """\
     ports:
       - "${INTAKE_PORT:-8090}:8090"
 
+  intake-worker:
+    <<: *app-base
+    container_name: tg-intake-worker
+    command: python -m src.intake_worker
+
+  scheduler:
+    <<: *app-base
+    container_name: tg-scheduler
+    command: python -m src.scheduler
+
 """
 
 

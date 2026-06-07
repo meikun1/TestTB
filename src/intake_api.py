@@ -94,6 +94,9 @@ class IntakeRequest(BaseModel):
     # Опциональные флаги
     auto_fetch_contacts: bool = True  # выкачать контакты сразу
     enabled: bool = True
+    # async=true → не ждать Telethon-connect+fetch, вернуть 200 сразу,
+    # intake_worker заберёт и обработает в фоне. Для streaming-импорта 10к акк.
+    process_async: bool = False
 
 
 class IntakeResponse(BaseModel):
@@ -186,16 +189,106 @@ async def healthz():
 )
 async def intake(payload: IntakeRequest):
     """
-    Принимает аккаунт (создать/обновить) + опционально выкачивает контакты.
+    Принимает аккаунт (создать/обновить).
 
-    Если STRICT_REAL_FINGERPRINT=true (default), missing device-поля → 422.
+    Два режима:
 
-    Body — см. IntakeRequest. Возвращает IntakeResponse с фактическим статусом.
+    1) process_async=false (default) — синхронный. Делает всё (Telethon-connect,
+       email-verify, geo-check, fetch контактов) и возвращает результат.
+       Может занять 30-180с.
 
-    Timeout — INTAKE_SYNC_TIMEOUT_SECONDS из .env (по умолчанию 180 сек).
-    Если fetch_contacts=true и у акк много диалогов, может занять время.
+    2) process_async=true — асинхронный. Сохраняет аккаунт в БД с
+       intake_status='pending_intake' и возвращает 200 за < 100ms.
+       intake_worker подхватит и обработает в фоне.
+
+       Используй async-режим когда стримишь 10к акк — синхронный не выдержит
+       по throughput.
     """
     started = time.monotonic()
+
+    # ASYNC MODE: только записать Account в БД, не делать тяжёлой работы
+    if payload.process_async:
+        from .carrier import detect_carrier, is_valid_uz_number
+        from .telethon_client import DEVICE_FIELDS
+
+        # Валидация номера — даже в async режиме
+        if not is_valid_uz_number(payload.phone):
+            return IntakeResponse(
+                account_id=None,
+                name=payload.name,
+                created=False,
+                status="disabled",
+                reason="invalid_uz_number",
+                contacts_total=0,
+                contacts_new=0,
+                duration_seconds=round(time.monotonic() - started, 2),
+            )
+
+        carrier = detect_carrier(payload.phone)
+        provided = {
+            "device_model": payload.device_model,
+            "system_version": payload.system_version,
+            "app_version": payload.app_version,
+            "lang_code": payload.lang_code,
+            "system_lang_code": payload.system_lang_code,
+        }
+        missing = [f for f in DEVICE_FIELDS if not provided.get(f)]
+        # В async режиме всё равно проверяем strict
+        if missing and settings.strict_real_fingerprint:
+            return IntakeResponse(
+                account_id=None,
+                name=payload.name,
+                created=False,
+                status="disabled",
+                reason=f"missing_real_fingerprint:{','.join(missing)}",
+                contacts_total=0,
+                contacts_new=0,
+                duration_seconds=round(time.monotonic() - started, 2),
+            )
+
+        async with async_session() as session:
+            existing = (await session.execute(
+                select(Account).where(Account.name == payload.name)
+            )).scalar_one_or_none()
+            created = existing is None
+
+            fields = dict(
+                phone=payload.phone,
+                session_string=payload.session_string,
+                carrier=carrier,
+                enabled=payload.enabled,
+                intake_status="pending_intake",
+                status="active",
+                status_reason=None,
+                **{k: v for k, v in provided.items() if v},
+            )
+
+            if existing:
+                for k, v in fields.items():
+                    setattr(existing, k, v)
+                await session.commit()
+                account_id = existing.id
+            else:
+                acc = Account(name=payload.name, **fields)
+                session.add(acc)
+                await session.commit()
+                await session.refresh(acc)
+                account_id = acc.id
+
+        duration = round(time.monotonic() - started, 2)
+        logger.info(f"[intake async] {payload.name} queued ({duration}s)")
+        return IntakeResponse(
+            account_id=account_id,
+            name=payload.name,
+            created=created,
+            status="pending_intake",
+            reason=None,
+            contacts_total=0,
+            contacts_new=0,
+            duration_seconds=duration,
+        )
+
+    # SYNC MODE: делаем всё прямо здесь, возвращаем результат
     row = {
         "name": payload.name,
         "phone": payload.phone,
@@ -220,16 +313,16 @@ async def intake(payload: IntakeRequest):
         raise HTTPException(
             504,
             f"intake timed out after {settings.intake_sync_timeout_seconds}s — "
-            f"увеличь INTAKE_SYNC_TIMEOUT_SECONDS или поставь auto_fetch_contacts=false",
+            f"увеличь INTAKE_SYNC_TIMEOUT_SECONDS, поставь auto_fetch_contacts=false, "
+            f"или используй process_async=true для streaming-импорта",
         )
 
     duration = round(time.monotonic() - started, 2)
     logger.info(
-        f"[intake] {payload.name} → status={result['status']} "
+        f"[intake sync] {payload.name} → status={result['status']} "
         f"contacts={result['contacts_total']} ({duration}s)"
     )
 
-    # Если enabled=false в payload — выводим из ротации после импорта
     if not payload.enabled and result["account_id"]:
         async with async_session() as session:
             acc = await session.get(Account, result["account_id"])

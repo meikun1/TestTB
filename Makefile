@@ -42,10 +42,16 @@ optout:
 	docker compose up -d optout
 
 intake:
-	docker compose up -d intake
+	docker compose up -d intake intake-worker
+
+scheduler:
+	docker compose up -d scheduler
+
+scheduler-logs:
+	docker compose logs -f scheduler
 
 intake-logs:
-	docker compose logs -f intake
+	docker compose logs -f intake intake-worker
 
 test-imap:
 	docker compose run --rm sender-0 python -m src.email_verify

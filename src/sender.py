@@ -39,9 +39,29 @@ from telethon.errors import (
 from .attachments import send_attachment
 from .config import settings
 from .db import async_session, init_db
-from .models import Account, BlockedContact, Contact, Draft, SendLog
+from .models import Account, BlockedContact, Contact, Draft, SendLog, ShardHeartbeat
 from .telethon_client import build_client
 from .timewindow import is_active_now, seconds_until_active
+
+
+# Heartbeat: каждый шард пишет свой статус в БД каждые ~60 сек
+async def _heartbeat(shard_id: int, sent_total: int, note: str = "") -> None:
+    try:
+        async with async_session() as session:
+            hb = await session.get(ShardHeartbeat, shard_id)
+            now = datetime.utcnow()
+            if hb is None:
+                session.add(ShardHeartbeat(
+                    shard_id=shard_id, last_beat=now,
+                    sent_count_total=sent_total, note=note,
+                ))
+            else:
+                hb.last_beat = now
+                hb.sent_count_total = sent_total
+                hb.note = note
+            await session.commit()
+    except Exception as e:
+        logger.debug(f"heartbeat error: {e}")
 
 
 # ============================================================================
@@ -329,38 +349,72 @@ async def run_shard(shard_id: int, shard_count: int) -> None:
         f"(parallel={settings.sender_parallel_accounts})"
     )
     sem = asyncio.Semaphore(settings.sender_parallel_accounts)
+    sent_total = 0
 
-    while True:
-        try:
-            if not is_active_now():
-                wait = min(seconds_until_active(), 3600)
-                logger.info(f"shard={shard_id}: вне active, сплю {wait}s")
-                await asyncio.sleep(wait)
-                continue
-
-            accounts = await get_shard_accounts_with_pending(shard_id, shard_count)
-            if not accounts:
-                logger.debug(f"shard={shard_id}: очередь пуста")
-                await asyncio.sleep(120)
-                continue
-
-            logger.info(
-                f"shard={shard_id}: {len(accounts)} аккаунтов c pending драфтами, "
-                f"запускаю обработку"
-            )
-
-            # Запускаем все аккаунты — semaphore ограничит одновременность
-            tasks = [
-                asyncio.create_task(process_account(acc, sem))
-                for acc in accounts
-            ]
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-            # Маленькая пауза между циклами чтобы не молотить БД пустыми запросами
-            await asyncio.sleep(30)
-        except Exception as e:
-            logger.error(f"shard={shard_id} loop error: {e}")
+    # Heartbeat task — пишет в БД раз в 60 сек
+    async def _hb_loop():
+        while True:
+            await _heartbeat(shard_id, sent_total, note="active")
             await asyncio.sleep(60)
+
+    hb_task = asyncio.create_task(_hb_loop())
+
+    try:
+        while True:
+            try:
+                if not is_active_now():
+                    wait = min(seconds_until_active(), 3600)
+                    logger.info(f"shard={shard_id}: вне active, сплю {wait}s")
+                    await _heartbeat(shard_id, sent_total, note="sleeping")
+                    await asyncio.sleep(wait)
+                    continue
+
+                accounts = await get_shard_accounts_with_pending(shard_id, shard_count)
+                if not accounts:
+                    logger.debug(f"shard={shard_id}: очередь пуста")
+                    await asyncio.sleep(120)
+                    continue
+
+                logger.info(
+                    f"shard={shard_id}: {len(accounts)} аккаунтов c pending драфтами"
+                )
+
+                # Подсчёт sent до и после батча — для heartbeat метрик
+                from sqlalchemy import func as _func
+                async with async_session() as _s:
+                    before = (await _s.execute(
+                        select(_func.count(SendLog.id))
+                        .where(SendLog.success.is_(True))
+                        .where((SendLog.account_id % shard_count) == shard_id)
+                    )).scalar() or 0
+
+                tasks = [
+                    asyncio.create_task(process_account(acc, sem))
+                    for acc in accounts
+                ]
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+                async with async_session() as _s:
+                    after = (await _s.execute(
+                        select(_func.count(SendLog.id))
+                        .where(SendLog.success.is_(True))
+                        .where((SendLog.account_id % shard_count) == shard_id)
+                    )).scalar() or 0
+                sent_total = after
+                logger.info(
+                    f"shard={shard_id}: цикл завершён, +{after - before} sends "
+                    f"(total {after})"
+                )
+                await asyncio.sleep(30)
+            except Exception as e:
+                logger.error(f"shard={shard_id} loop error: {e}")
+                await asyncio.sleep(60)
+    finally:
+        hb_task.cancel()
+        try:
+            await hb_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 # ============================================================================

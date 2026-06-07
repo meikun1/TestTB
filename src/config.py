@@ -111,6 +111,36 @@ class Settings(BaseSettings):
     optout_poll_interval_seconds: int = Field(600, alias="OPTOUT_POLL_INTERVAL_SECONDS")
     optout_messages_per_poll: int = Field(20, alias="OPTOUT_MESSAGES_PER_POLL")
 
+    # === Scheduler (автоматизация всего) ===
+    # Дефолтное вложение для авто-генерации новых драфтов.
+    # Формат: photo:attachments/file.png | video:... | link:https://...
+    default_attach: str | None = Field(None, alias="DEFAULT_ATTACH")
+    default_attach_caption: str | None = Field(None, alias="DEFAULT_ATTACH_CAPTION")
+    default_attach_delay: int = Field(15, alias="DEFAULT_ATTACH_DELAY")
+
+    # Интервалы scheduler'а (секунды)
+    auto_generate_interval: int = Field(900, alias="AUTO_GENERATE_INTERVAL")     # 15 мин
+    auto_cleanup_interval: int = Field(3600, alias="AUTO_CLEANUP_INTERVAL")      # 1 ч
+    auto_health_interval: int = Field(300, alias="AUTO_HEALTH_INTERVAL")         # 5 мин
+    auto_prune_interval: int = Field(86400, alias="AUTO_PRUNE_INTERVAL")         # 24 ч
+
+    # Сколько дней хранить успешные send_log
+    send_log_retention_days: int = Field(14, alias="SEND_LOG_RETENTION_DAYS")
+    # Сколько дней допустимо для контакта без активности (старше → не шлём)
+    contact_inactive_days: int = Field(180, alias="CONTACT_INACTIVE_DAYS")
+
+    # === Intake worker (фоновая обработка intake-pending аккаунтов) ===
+    intake_worker_parallel: int = Field(10, alias="INTAKE_WORKER_PARALLEL")
+    intake_worker_poll_interval: int = Field(30, alias="INTAKE_WORKER_POLL_INTERVAL")
+
+    # === Health check thresholds ===
+    # Алерт если shard heartbeat старше N сек
+    health_shard_stale_seconds: int = Field(600, alias="HEALTH_SHARD_STALE_SECONDS")
+    # Алерт если за час не было ни одной успешной отправки
+    health_no_send_alert_minutes: int = Field(60, alias="HEALTH_NO_SEND_ALERT_MINUTES")
+    # Алерт если доля active падает ниже X
+    health_active_ratio_min: float = Field(0.5, alias="HEALTH_ACTIVE_RATIO_MIN")
+
     @property
     def db_url(self) -> str:
         if self.use_pgbouncer:

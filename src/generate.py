@@ -164,11 +164,22 @@ def main() -> None:
         "--account", type=str, default=None,
         help="генерить только для одного аккаунта (по имени)",
     )
+    parser.add_argument(
+        "--auto", action="store_true",
+        help="взять параметры из DEFAULT_ATTACH/DEFAULT_ATTACH_CAPTION/"
+             "DEFAULT_ATTACH_DELAY в .env. Удобно для cron/scheduler.",
+    )
     args = parser.parse_args()
 
-    asyncio.run(run_generate(
-        args.attach, args.attach_caption, args.attach_delay, args.account,
-    ))
+    if args.auto:
+        from .config import settings
+        attach = args.attach or settings.default_attach
+        caption = args.attach_caption or settings.default_attach_caption
+        delay = args.attach_delay if args.attach_delay != 15 else settings.default_attach_delay
+    else:
+        attach, caption, delay = args.attach, args.attach_caption, args.attach_delay
+
+    asyncio.run(run_generate(attach, caption, delay, args.account))
 
 
 if __name__ == "__main__":

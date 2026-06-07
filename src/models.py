@@ -35,6 +35,11 @@ class Account(Base):
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
     status_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # pending_intake | processing | done | failed — этап обработки intake-воркером
+    intake_status: Mapped[str] = mapped_column(
+        String(32), default="done", index=True
+    )
+
     flood_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_send_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -44,6 +49,35 @@ class Account(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     contacts: Mapped[list["Contact"]] = relationship(back_populates="account")
+
+
+class ShardHeartbeat(Base):
+    """
+    Каждый sender-shard раз в минуту пишет timestamp. Scheduler смотрит
+    на эту таблицу и алертит если кто-то застрял (heartbeat старше 5 мин).
+    """
+    __tablename__ = "shard_heartbeats"
+
+    shard_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_beat: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    sent_count_total: Mapped[int] = mapped_column(Integer, default=0)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class GenerateRun(Base):
+    """
+    Журнал авто-генераций драфтов scheduler'ом. Чтобы не дублировать
+    запуски и видеть когда последний раз пересчитывали очередь.
+    """
+    __tablename__ = "generate_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    accounts_touched: Mapped[int] = mapped_column(Integer, default=0)
+    drafts_created: Mapped[int] = mapped_column(Integer, default=0)
+    trigger: Mapped[str] = mapped_column(String(32), default="auto")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Contact(Base):
