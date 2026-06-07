@@ -41,22 +41,17 @@ async def generate_for_account(
     attach_ref: str | None,
     attach_caption: str | None,
     attach_delay: int,
+    blocked: set[int],
+    batch_size: int = 1000,
 ) -> int:
-    """Возвращает количество созданных драфтов."""
+    """
+    Возвращает количество созданных драфтов.
+
+    Для масштаба 10к акк × 200 контактов = 2M драфтов, делает batched commits
+    каждые batch_size штук — иначе один большой INSERT затыкает БД и память.
+    """
+    created = 0
     async with async_session() as session:
-        # Все контакты с историей переписки
-        contacts = (await session.execute(
-            select(Contact)
-            .where(Contact.account_id == account.id)
-            .where(Contact.total_messages > 0)
-            .where(Contact.last_msg_at.is_not(None))
-        )).scalars().all()
-
-        # Глобальный blocklist
-        blocked = set(r[0] for r in (await session.execute(
-            select(BlockedContact.tg_user_id)
-        )).all())
-
         # Дроп тех у кого уже есть pending Draft на этом аккаунте (не дублируем)
         existing_drafts = set(r[0] for r in (await session.execute(
             select(Draft.contact_id)
@@ -64,8 +59,14 @@ async def generate_for_account(
             .where(Draft.status.in_(["pending"]))
         )).all())
 
-        created = 0
-        for contact in contacts:
+        # Все контакты с историей переписки — стримим по одному
+        batch_n = 0
+        async for contact in await session.stream_scalars(
+            select(Contact)
+            .where(Contact.account_id == account.id)
+            .where(Contact.total_messages > 0)
+            .where(Contact.last_msg_at.is_not(None))
+        ):
             if contact.tg_user_id in blocked:
                 continue
             if contact.id in existing_drafts:
@@ -86,9 +87,14 @@ async def generate_for_account(
                 status="pending",
             ))
             created += 1
+            batch_n += 1
+            if batch_n >= batch_size:
+                await session.commit()
+                batch_n = 0
 
-        await session.commit()
-        return created
+        if batch_n > 0:
+            await session.commit()
+    return created
 
 
 async def run_generate(
@@ -114,17 +120,25 @@ async def run_generate(
         logger.warning("Нет подходящих аккаунтов (нужен enabled=true + status=active)")
         return
 
+    # Загружаем blocklist один раз — расшариваем между всеми
+    async with async_session() as session:
+        blocked = set(r[0] for r in (await session.execute(
+            select(BlockedContact.tg_user_id)
+        )).all())
+
     logger.info(
         f"Generating drafts для {len(accounts)} аккаунтов"
+        f" (blocklist: {len(blocked)})"
         + (f" с вложением {attach_kind}" if attach_kind else " (только текст)")
     )
 
     total = 0
-    for acc in accounts:
+    for i, acc in enumerate(accounts, 1):
         n = await generate_for_account(
-            acc, attach_kind, attach_ref, attach_caption, attach_delay,
+            acc, attach_kind, attach_ref, attach_caption, attach_delay, blocked,
         )
-        logger.info(f"[{acc.name}] +{n} draft(ов)")
+        if i % 50 == 0 or n > 0:
+            logger.info(f"[{i}/{len(accounts)}] [{acc.name}] +{n} draft(ов)")
         total += n
 
     logger.success(f"Всего создано {total} драфтов")

@@ -16,6 +16,24 @@
 - **Вложения:** photo / video / audio / voice / document / link
 - **Sticky device-fingerprint:** реальные `device_model`, `system_version`, `app_version`, `lang_code` каждого аккаунта подаются в Telethon
 
+## Масштаб
+
+Из коробки поддерживается **50-1000 аккаунтов** на одном сервере с дефолтным `docker-compose.yml`. Для масштабирования до **10 000+ аккаунтов** — отдельный гайд: [`docs/SCALE_10K.md`](docs/SCALE_10K.md) (PgBouncer, multi-server деплой, генератор compose под нужное число шард).
+
+Краткая шпаргалка:
+
+| Парк | `WORKER_COUNT` | PgBouncer | Серверов | RAM/сервер |
+|---|---|---|---|---|
+| 50-200 | 10 | нет | 1 | 8 GB |
+| 200-1000 | 20-30 | нет | 1 | 16-32 GB |
+| 1000-5000 | 50-100 | **да** | 1 (большой) | 64-128 GB |
+| 5000-10000 | 100 | **да** | 2-4 | 32-64 GB каждый |
+
+Перегенерировать docker-compose под нужный масштаб:
+```bash
+python scripts/gen_compose.py --shards 100 --senders 10 --pgbouncer
+```
+
 ## Структура проекта
 
 ```

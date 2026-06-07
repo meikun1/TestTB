@@ -1,28 +1,28 @@
 """
-Sender-воркер: берёт Draft'ы из очереди и отправляет.
+Sender-воркер: обрабатывает свой шард аккаунтов.
+
+Account-centric pattern для масштаба до 10к аккаунтов:
+- Воркер обрабатывает SHARD_ID аккаунтов (account.id % WORKER_COUNT == shard)
+- Внутри воркера до SENDER_PARALLEL_ACCOUNTS параллельных задач, каждая
+  работает с ОДНИМ аккаунтом за раз: подключается → шлёт все его pending
+  драфты подряд (с паузами 30-90s) → отключается → берёт следующий
+- Один воркер может вести несколько шардов: --shards 0-9 или --shards 5
+
+Зачем account-centric:
+- Каждый коннект используется по полной (не connect/disconnect на каждое
+  сообщение), но и не висит вечно — освобождает память
+- 100 шард × 20 параллельных = 2000 одновременных коннектов суммарно
+  (40-80 GB RAM) при 10к аккаунтов в БД
 
 Запуск:
-    python -m src.sender --shard 0
-    python -m src.sender --shard 1
-    ...
-
-В docker-compose поднимается WORKER_COUNT штук, каждый со своим shard_id.
-Шардинг: account.id % WORKER_COUNT == shard_id.
-
-Логика:
-  1. Active-hours check (UZ timezone)
-  2. Claim Draft через SELECT FOR UPDATE SKIP LOCKED
-  3. Проверка opt-out (contact в BlockedContact)
-  4. Carrier-throttling (Beeline UZ — мягче лимит)
-  5. Account-aware FloodWait state
-  6. Отправка текста
-  7. Если есть attachment — пауза, отправка вложения
-  8. Запись в SendLog
-  9. Случайная пауза 30-90 сек
+    python -m src.sender --shards 0         # один шард
+    python -m src.sender --shards 0-9       # шарды 0,1,2,3,4,5,6,7,8,9
+    python -m src.sender --shards 0,3,7     # конкретные шарды
 """
 import argparse
 import asyncio
 import random
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -49,11 +49,6 @@ from .timewindow import is_active_now, seconds_until_active
 # ============================================================================
 
 async def _check_carrier_capacity(session, account: Account) -> tuple[bool, str]:
-    """
-    Если RESPECT_CARRIER_LIMITS — не превышать CARRIER_HOURLY_CAP суммарно
-    на всех аккаунтах одного carrier за последний час.
-    Для Beeline дополнительно множитель.
-    """
     if not settings.respect_carrier_limits or not account.carrier:
         return True, "ok"
 
@@ -77,28 +72,66 @@ async def _check_carrier_capacity(session, account: Account) -> tuple[bool, str]
 
 
 # ============================================================================
-# Очередь
+# Получение работы
 # ============================================================================
 
-async def claim_next_draft(
-    session, shard_id: int, shard_count: int,
-) -> tuple[Draft, Contact, Account] | None:
-    q = (
-        select(Draft, Contact, Account)
-        .join(Contact, Draft.contact_id == Contact.id)
-        .join(Account, Draft.account_id == Account.id)
-        .where(Draft.status == "pending")
-        .where(Account.enabled.is_(True))
-        .where(Account.status == "active")
-        .where((Draft.account_id % shard_count) == shard_id)
-        .order_by(desc(Contact.last_msg_at), Draft.created_at.asc())
-        .limit(1)
-        .with_for_update(skip_locked=True, of=Draft)
-    )
-    row = (await session.execute(q)).first()
-    if not row:
-        return None
-    return row
+async def get_shard_accounts_with_pending(shard_id: int, shard_count: int) -> list[Account]:
+    """Аккаунты в моём шарде у которых есть pending драфты."""
+    async with async_session() as session:
+        q = (
+            select(Account)
+            .join(Draft, Draft.account_id == Account.id)
+            .where(Account.enabled.is_(True))
+            .where(Account.status == "active")
+            .where(Draft.status == "pending")
+            .where((Account.id % shard_count) == shard_id)
+            .group_by(Account.id)
+            .order_by(Account.id)
+        )
+        return list((await session.execute(q)).scalars().all())
+
+
+async def get_next_pending_draft_for_account(
+    account: Account,
+) -> tuple[Draft, Contact] | None:
+    """Берёт следующий pending draft этого аккаунта (SKIP LOCKED)."""
+    async with async_session() as session:
+        q = (
+            select(Draft, Contact)
+            .join(Contact, Draft.contact_id == Contact.id)
+            .where(Draft.account_id == account.id)
+            .where(Draft.status == "pending")
+            .order_by(desc(Contact.last_msg_at), Draft.created_at.asc())
+            .limit(1)
+            .with_for_update(skip_locked=True, of=Draft)
+        )
+        row = (await session.execute(q)).first()
+        if not row:
+            return None
+        draft, contact = row
+
+        # Проверка blocklist
+        blocked = (await session.execute(
+            select(BlockedContact)
+            .where(BlockedContact.tg_user_id == contact.tg_user_id)
+        )).scalar_one_or_none()
+        if blocked:
+            draft.status = "rejected"
+            await session.commit()
+            # Рекурсивно следующий
+            return await get_next_pending_draft_for_account(account)
+
+        # Carrier capacity
+        ok, reason = await _check_carrier_capacity(session, account)
+        if not ok:
+            logger.info(f"[{account.name}] {reason}")
+            await session.commit()  # release lock без изменения
+            return None  # ждём окно
+
+        # Возвращаем — основная транзакция продолжит после
+        # (драфт остаётся pending пока send не сделает его sent/failed)
+        await session.commit()
+        return draft, contact
 
 
 # ============================================================================
@@ -118,88 +151,90 @@ async def send_one(
     account: Account,
     contact: Contact,
     draft: Draft,
-    session,
 ) -> tuple[str, Optional[int]]:
-    """
-    Возвращает (status, extra):
-      ('sent', None)         — успешно
-      ('flood', seconds)     — FloodWait
-      ('banned', None)       — PeerFlood, аккаунт горит
-      ('skip', None)         — privacy/forbidden/etc
-    """
     name = contact.first_name or contact.username or str(contact.tg_user_id)
     has_attachment = bool(draft.attachment_kind and draft.attachment_ref)
 
-    try:
-        # 1) Текст
-        await client.send_message(contact.tg_user_id, draft.text, link_preview=True)
-        logger.success(f"[{account.name}] text → {name}")
-        session.add(SendLog(
-            draft_id=draft.id, account_id=account.id,
-            success=True, kind="message",
-        ))
+    async with async_session() as session:
+        # Перезагружаем draft в новой сессии чтобы записать статус
+        draft = await session.get(Draft, draft.id)
+        if draft is None or draft.status != "pending":
+            return "skip", None  # кто-то другой уже взял
+        try:
+            await client.send_message(contact.tg_user_id, draft.text, link_preview=True)
+            logger.success(f"[{account.name}] text → {name}")
+            session.add(SendLog(
+                draft_id=draft.id, account_id=account.id,
+                success=True, kind="message",
+            ))
 
-        # 2) Вложение (если есть)
-        if has_attachment:
-            delay = await _attachment_delay(draft)
-            logger.info(
-                f"[{account.name}] {draft.attachment_kind} через {delay}s → {name}"
-            )
-            await asyncio.sleep(delay)
-            try:
-                await send_attachment(
-                    client, contact, draft, caption=draft.attachment_caption,
+            if has_attachment:
+                delay = await _attachment_delay(draft)
+                logger.info(
+                    f"[{account.name}] {draft.attachment_kind} через {delay}s → {name}"
                 )
-                logger.success(
-                    f"[{account.name}] {draft.attachment_kind} ✓ → {name}"
-                )
-                session.add(SendLog(
-                    draft_id=draft.id, account_id=account.id,
-                    success=True, kind="attachment",
-                ))
-            except FileNotFoundError as e:
-                logger.error(f"[{account.name}] {e}")
-                session.add(SendLog(
-                    draft_id=draft.id, account_id=account.id,
-                    success=False, kind="attachment", error=str(e)[:200],
-                ))
+                await asyncio.sleep(delay)
+                try:
+                    await send_attachment(
+                        client, contact, draft, caption=draft.attachment_caption,
+                    )
+                    logger.success(
+                        f"[{account.name}] {draft.attachment_kind} ✓ → {name}"
+                    )
+                    session.add(SendLog(
+                        draft_id=draft.id, account_id=account.id,
+                        success=True, kind="attachment",
+                    ))
+                except FileNotFoundError as e:
+                    logger.error(f"[{account.name}] {e}")
+                    session.add(SendLog(
+                        draft_id=draft.id, account_id=account.id,
+                        success=False, kind="attachment", error=str(e)[:200],
+                    ))
 
-        draft.status = "sent"
-        draft.sent_at = datetime.utcnow()
-        account.last_send_at = datetime.utcnow()
-        return "sent", None
+            draft.status = "sent"
+            draft.sent_at = datetime.utcnow()
+            acc_in_session = await session.get(Account, account.id)
+            if acc_in_session:
+                acc_in_session.last_send_at = datetime.utcnow()
+            await session.commit()
+            return "sent", None
 
-    except FloodWaitError as e:
-        wait = int(e.seconds * 1.15)
-        logger.warning(f"[{account.name}] FloodWait {wait}s")
-        return "flood", wait
+        except FloodWaitError as e:
+            wait = int(e.seconds * 1.15)
+            logger.warning(f"[{account.name}] FloodWait {wait}s")
+            await session.rollback()
+            return "flood", wait
 
-    except PeerFloodError:
-        logger.critical(f"[{account.name}] PeerFloodError — аккаунт сжёгся")
-        draft.status = "failed"
-        session.add(SendLog(
-            draft_id=draft.id, account_id=account.id,
-            success=False, error="peer_flood", kind="message",
-        ))
-        return "banned", None
+        except PeerFloodError:
+            logger.critical(f"[{account.name}] PeerFloodError — аккаунт сжёгся")
+            draft.status = "failed"
+            session.add(SendLog(
+                draft_id=draft.id, account_id=account.id,
+                success=False, error="peer_flood", kind="message",
+            ))
+            await session.commit()
+            return "banned", None
 
-    except (UserPrivacyRestrictedError, ChatWriteForbiddenError) as e:
-        logger.info(f"[{account.name}] privacy/forbidden для {name}")
-        draft.status = "failed"
-        session.add(SendLog(
-            draft_id=draft.id, account_id=account.id,
-            success=False, error=e.__class__.__name__, kind="message",
-        ))
-        return "skip", None
+        except (UserPrivacyRestrictedError, ChatWriteForbiddenError) as e:
+            logger.info(f"[{account.name}] privacy/forbidden для {name}")
+            draft.status = "failed"
+            session.add(SendLog(
+                draft_id=draft.id, account_id=account.id,
+                success=False, error=e.__class__.__name__, kind="message",
+            ))
+            await session.commit()
+            return "skip", None
 
-    except Exception as e:
-        logger.error(f"[{account.name}] send error: {e}")
-        draft.status = "failed"
-        session.add(SendLog(
-            draft_id=draft.id, account_id=account.id,
-            success=False, error=str(e)[:200], kind="message",
-        ))
-        return "skip", None
+        except Exception as e:
+            logger.error(f"[{account.name}] send error: {e}")
+            draft.status = "failed"
+            session.add(SendLog(
+                draft_id=draft.id, account_id=account.id,
+                success=False, error=str(e)[:200], kind="message",
+            ))
+            await session.commit()
+            return "skip", None
 
 
 async def _mark_account_flood(account_id: int, seconds: int) -> None:
@@ -222,135 +257,163 @@ async def _mark_account_banned(account_id: int, reason: str) -> None:
             await session.commit()
 
 
-async def _account_in_flood(session, account: Account) -> bool:
-    if account.flood_until and account.flood_until > datetime.utcnow():
-        return True
-    return False
-
-
 # ============================================================================
-# Главный цикл воркера
+# Account-centric worker (одна async-задача — один аккаунт за раз)
 # ============================================================================
 
-# Кеш подключённых клиентов на воркер
-_clients: dict[int, TelegramClient] = {}
+async def process_account(account: Account, sem: asyncio.Semaphore) -> None:
+    """
+    Подключается к аккаунту → шлёт все его pending драфты подряд → disconnect.
+    Между сообщениями этого аккаунта: пауза MIN_DELAY..MAX_DELAY.
+    """
+    async with sem:
+        # Если аккаунт в flood-cooldown — пропускаем сразу
+        async with async_session() as session:
+            fresh = await session.get(Account, account.id)
+            if not fresh or fresh.flood_until and fresh.flood_until > datetime.utcnow():
+                return
+            account = fresh
 
-
-async def _get_client(account: Account) -> TelegramClient | None:
-    """Lazy connect + caching."""
-    if account.id in _clients:
-        return _clients[account.id]
-    try:
         client = build_client(account)
-        await client.connect()
-        if not await client.is_user_authorized():
-            logger.error(f"[{account.name}] не авторизован — пропускаю")
-            await client.disconnect()
-            return None
-        _clients[account.id] = client
-        logger.info(f"[{account.name}] подключён")
-        return client
-    except Exception as e:
-        logger.error(f"[{account.name}] connect error: {e}")
-        return None
-
-
-async def _close_all_clients() -> None:
-    for client in _clients.values():
         try:
-            await client.disconnect()
-        except Exception:
-            pass
-    _clients.clear()
+            await client.connect()
+            if not await client.is_user_authorized():
+                logger.warning(f"[{account.name}] не авторизован, skip")
+                return
 
+            sent_count = 0
+            while True:
+                # Active hours check
+                if not is_active_now():
+                    logger.debug(f"[{account.name}] вне active-окна")
+                    break
 
-async def run(shard_id: int) -> None:
-    await init_db()
-    shard_count = settings.worker_count
-    logger.info(f"Sender shard={shard_id}/{shard_count} started")
-
-    try:
-        while True:
-            # Active hours window
-            if not is_active_now():
-                wait = seconds_until_active()
-                wait = min(wait, 3600)  # просыпаемся раз в час чтобы проверить
-                logger.info(f"Вне active-окна, сплю {wait}s")
-                await asyncio.sleep(wait)
-                continue
-
-            async with async_session() as session:
-                row = await claim_next_draft(session, shard_id, shard_count)
+                row = await get_next_pending_draft_for_account(account)
                 if row is None:
-                    await session.commit()
-                    logger.info("Очередь пустая, сплю 5 мин")
-                    await asyncio.sleep(300)
-                    continue
+                    break  # очередь этого аккаунта пуста
 
-                draft, contact, account = row
-
-                # Аккаунт в flood-cooldown?
-                if await _account_in_flood(session, account):
-                    await session.commit()  # release lock
-                    await asyncio.sleep(30)
-                    continue
-
-                # Контакт в blocklist?
-                blocked = (await session.execute(
-                    select(BlockedContact).where(
-                        BlockedContact.tg_user_id == contact.tg_user_id
-                    )
-                )).scalar_one_or_none()
-                if blocked:
-                    draft.status = "rejected"
-                    await session.commit()
-                    continue
-
-                # Carrier capacity
-                ok, reason = await _check_carrier_capacity(session, account)
-                if not ok:
-                    logger.info(f"[{account.name}] {reason}")
-                    await session.commit()  # release lock без изменения draft
-                    await asyncio.sleep(60)
-                    continue
-
-                # Подключить telethon-клиент
-                client = await _get_client(account)
-                if client is None:
-                    draft.status = "failed"
-                    await session.commit()
-                    continue
-
-                # Отправка
-                status, extra = await send_one(
-                    client, account, contact, draft, session,
-                )
-                await session.commit()
+                draft, contact = row
+                status, extra = await send_one(client, account, contact, draft)
 
                 if status == "sent":
+                    sent_count += 1
                     delay = random.randint(
                         settings.min_delay_seconds, settings.max_delay_seconds,
                     )
-                    logger.info(f"[{account.name}] следующая через {delay}s")
+                    logger.debug(f"[{account.name}] next через {delay}s")
                     await asyncio.sleep(delay)
                 elif status == "flood":
                     await _mark_account_flood(account.id, extra)
-                    await asyncio.sleep(5)
+                    break  # из этого аккаунта выходим, другие могут работать
                 elif status == "banned":
                     await _mark_account_banned(account.id, "PeerFlood")
-                else:
-                    await asyncio.sleep(15)
+                    break
+                else:  # skip
+                    await asyncio.sleep(2)
 
-    finally:
-        await _close_all_clients()
-        logger.info(f"Sender shard={shard_id} остановлен")
+            if sent_count > 0:
+                logger.info(f"[{account.name}] цикл завершён, отправлено {sent_count}")
+        except Exception as e:
+            logger.error(f"[{account.name}] worker error: {e}")
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+
+async def run_shard(shard_id: int, shard_count: int) -> None:
+    """Главный цикл одного шарда."""
+    logger.info(
+        f"Shard {shard_id}/{shard_count} started "
+        f"(parallel={settings.sender_parallel_accounts})"
+    )
+    sem = asyncio.Semaphore(settings.sender_parallel_accounts)
+
+    while True:
+        try:
+            if not is_active_now():
+                wait = min(seconds_until_active(), 3600)
+                logger.info(f"shard={shard_id}: вне active, сплю {wait}s")
+                await asyncio.sleep(wait)
+                continue
+
+            accounts = await get_shard_accounts_with_pending(shard_id, shard_count)
+            if not accounts:
+                logger.debug(f"shard={shard_id}: очередь пуста")
+                await asyncio.sleep(120)
+                continue
+
+            logger.info(
+                f"shard={shard_id}: {len(accounts)} аккаунтов c pending драфтами, "
+                f"запускаю обработку"
+            )
+
+            # Запускаем все аккаунты — semaphore ограничит одновременность
+            tasks = [
+                asyncio.create_task(process_account(acc, sem))
+                for acc in accounts
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Маленькая пауза между циклами чтобы не молотить БД пустыми запросами
+            await asyncio.sleep(30)
+        except Exception as e:
+            logger.error(f"shard={shard_id} loop error: {e}")
+            await asyncio.sleep(60)
+
+
+# ============================================================================
+# Entry point — поддерживает несколько шардов в одном процессе
+# ============================================================================
+
+def parse_shards(spec: str) -> list[int]:
+    """
+    '0' → [0]
+    '0-9' → [0,1,2,...,9]
+    '0,3,7' → [0,3,7]
+    """
+    result = []
+    for part in spec.split(","):
+        part = part.strip()
+        if "-" in part:
+            a, b = part.split("-")
+            result.extend(range(int(a), int(b) + 1))
+        else:
+            result.append(int(part))
+    return result
+
+
+async def run(shards: list[int]) -> None:
+    await init_db()
+    shard_count = settings.worker_count
+
+    for s in shards:
+        if not (0 <= s < shard_count):
+            raise SystemExit(
+                f"shard {s} вне диапазона [0, {shard_count}). "
+                f"Проверь WORKER_COUNT в .env"
+            )
+
+    logger.info(
+        f"Sender process started: shards {shards} из {shard_count} всего"
+    )
+
+    tasks = [run_shard(s, shard_count) for s in shards]
+    await asyncio.gather(*tasks)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--shard", type=int, required=True)
+    parser.add_argument(
+        "--shards",
+        type=str,
+        required=True,
+        help='формат: "0" / "0-9" / "0,3,7"',
+    )
     args = parser.parse_args()
-    asyncio.run(run(args.shard))
+    shards = parse_shards(args.shards)
+    asyncio.run(run(shards))
 
 
 if __name__ == "__main__":

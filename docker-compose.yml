@@ -1,3 +1,6 @@
+# АВТОГЕНЕРИРОВАННЫЙ docker-compose.yml
+# Перегенерируй через scripts/gen_compose.py
+
 x-app-base: &app-base
   build: .
   image: tg-broadcaster:latest
@@ -26,7 +29,11 @@ services:
       - -c
       - max_connections=400
       - -c
-      - shared_buffers=512MB
+      - shared_buffers=1GB
+      - -c
+      - effective_cache_size=3GB
+      - -c
+      - work_mem=16MB
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -35,13 +42,11 @@ services:
       timeout: 3s
       retries: 10
 
-  # Слушатель входящих для глобального opt-out
   optout:
     <<: *app-base
     container_name: tg-optout
-    command: python -m src.optout
+    command: python -m src.optout --shards all
 
-  # HTTP API для приёма аккаунтов потоком (warmup-пайплайн → сюда)
   intake:
     <<: *app-base
     container_name: tg-intake
@@ -49,18 +54,56 @@ services:
     ports:
       - "${INTAKE_PORT:-8090}:8090"
 
-  # 10 sender-воркеров. Если меняешь WORKER_COUNT в .env — подгоняй число
-  # sender-N сервисов синхронно.
-  sender-0: { <<: *app-base, container_name: tg-sender-0, command: python -m src.sender --shard 0 }
-  sender-1: { <<: *app-base, container_name: tg-sender-1, command: python -m src.sender --shard 1 }
-  sender-2: { <<: *app-base, container_name: tg-sender-2, command: python -m src.sender --shard 2 }
-  sender-3: { <<: *app-base, container_name: tg-sender-3, command: python -m src.sender --shard 3 }
-  sender-4: { <<: *app-base, container_name: tg-sender-4, command: python -m src.sender --shard 4 }
-  sender-5: { <<: *app-base, container_name: tg-sender-5, command: python -m src.sender --shard 5 }
-  sender-6: { <<: *app-base, container_name: tg-sender-6, command: python -m src.sender --shard 6 }
-  sender-7: { <<: *app-base, container_name: tg-sender-7, command: python -m src.sender --shard 7 }
-  sender-8: { <<: *app-base, container_name: tg-sender-8, command: python -m src.sender --shard 8 }
-  sender-9: { <<: *app-base, container_name: tg-sender-9, command: python -m src.sender --shard 9 }
+  sender-0:
+    <<: *app-base
+    container_name: tg-sender-0
+    command: python -m src.sender --shards "0"
+
+  sender-1:
+    <<: *app-base
+    container_name: tg-sender-1
+    command: python -m src.sender --shards "1"
+
+  sender-2:
+    <<: *app-base
+    container_name: tg-sender-2
+    command: python -m src.sender --shards "2"
+
+  sender-3:
+    <<: *app-base
+    container_name: tg-sender-3
+    command: python -m src.sender --shards "3"
+
+  sender-4:
+    <<: *app-base
+    container_name: tg-sender-4
+    command: python -m src.sender --shards "4"
+
+  sender-5:
+    <<: *app-base
+    container_name: tg-sender-5
+    command: python -m src.sender --shards "5"
+
+  sender-6:
+    <<: *app-base
+    container_name: tg-sender-6
+    command: python -m src.sender --shards "6"
+
+  sender-7:
+    <<: *app-base
+    container_name: tg-sender-7
+    command: python -m src.sender --shards "7"
+
+  sender-8:
+    <<: *app-base
+    container_name: tg-sender-8
+    command: python -m src.sender --shards "8"
+
+  sender-9:
+    <<: *app-base
+    container_name: tg-sender-9
+    command: python -m src.sender --shards "9"
+
 
 volumes:
   postgres_data:

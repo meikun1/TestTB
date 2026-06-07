@@ -26,12 +26,26 @@ class Settings(BaseSettings):
     postgres_password: str = Field("tg", alias="POSTGRES_PASSWORD")
     postgres_db: str = Field("tg_broadcaster", alias="POSTGRES_DB")
 
+    # PgBouncer (опц. — нужен начиная с ~2000 акк когда max_connections не хватает)
+    use_pgbouncer: bool = Field(False, alias="USE_PGBOUNCER")
+    pgbouncer_host: str = Field("pgbouncer", alias="PGBOUNCER_HOST")
+    pgbouncer_port: int = Field(6432, alias="PGBOUNCER_PORT")
+
     # === Sender ===
-    worker_count: int = Field(10, alias="WORKER_COUNT")
+    worker_count: int = Field(10, alias="WORKER_COUNT")  # количество ШАРД'ов всего пула
     min_delay_seconds: int = Field(30, alias="MIN_DELAY_SECONDS")
     max_delay_seconds: int = Field(90, alias="MAX_DELAY_SECONDS")
     attachment_delay_min: int = Field(5, alias="ATTACHMENT_DELAY_MIN")
     attachment_delay_max: int = Field(30, alias="ATTACHMENT_DELAY_MAX")
+
+    # Сколько аккаунтов один воркер держит подключёнными одновременно (LRU).
+    # 10000 акк / 100 шард = 100 акк на шард. Если parallelism=20 — держим 20
+    # коннектов на воркер, остальные 80 будут переподключаться по требованию.
+    sender_parallel_accounts: int = Field(20, alias="SENDER_PARALLEL_ACCOUNTS")
+
+    # На сколько внутренних shard-задач рассыпать один процесс sender'а.
+    # Если запускаешь sender --shards 0-9, то это override (в коде).
+    sender_shards_per_process: int = Field(1, alias="SENDER_SHARDS_PER_PROCESS")
 
     # === Геоконсистентность UZ ===
     active_timezone: str = Field("Asia/Tashkent", alias="ACTIVE_TIMEZONE")
@@ -93,8 +107,19 @@ class Settings(BaseSettings):
     alert_bot_token: str = Field("", alias="ALERT_BOT_TOKEN")
     alert_chat_id: str = Field("", alias="ALERT_CHAT_ID")
 
+    # === Polling-based optout (для масштаба 1000+) ===
+    optout_poll_interval_seconds: int = Field(600, alias="OPTOUT_POLL_INTERVAL_SECONDS")
+    optout_messages_per_poll: int = Field(20, alias="OPTOUT_MESSAGES_PER_POLL")
+
     @property
     def db_url(self) -> str:
+        if self.use_pgbouncer:
+            # При transaction-mode pgbouncer asyncpg не должен использовать
+            # prepared statements (statement_cache_size=0 + prepared_statement_cache_size=0)
+            return (
+                f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
+                f"@{self.pgbouncer_host}:{self.pgbouncer_port}/{self.postgres_db}"
+            )
         return (
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"

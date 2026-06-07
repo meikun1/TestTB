@@ -1,4 +1,4 @@
-"""Подключение к Postgres + init_db."""
+"""Подключение к Postgres (с поддержкой PgBouncer для масштаба)."""
 from sqlalchemy.ext.asyncio import (
     AsyncSession, async_sessionmaker, create_async_engine,
 )
@@ -13,13 +13,30 @@ from .models import Base
 (PROJECT_ROOT / "sessions").mkdir(parents=True, exist_ok=True)
 
 
-engine = create_async_engine(
-    settings.db_url,
+# Параметры engine зависят от того, идём ли через PgBouncer.
+# При PgBouncer transaction-mode нельзя prepared statements (отдельные
+# соединения для каждой транзакции, prepared statement не переживает).
+_engine_kwargs = dict(
     echo=False,
-    pool_size=20,
-    max_overflow=10,
     pool_pre_ping=True,
 )
+if settings.use_pgbouncer:
+    # asyncpg специфика — отключаем prepared statement cache
+    _engine_kwargs["connect_args"] = {
+        "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0,
+    }
+    # pool со стороны приложения тоже не нужен большой —
+    # PgBouncer сам пулит коннекты
+    _engine_kwargs["pool_size"] = 5
+    _engine_kwargs["max_overflow"] = 5
+else:
+    # Прямой коннект к Postgres
+    _engine_kwargs["pool_size"] = 20
+    _engine_kwargs["max_overflow"] = 10
+
+
+engine = create_async_engine(settings.db_url, **_engine_kwargs)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
