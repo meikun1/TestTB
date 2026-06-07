@@ -39,11 +39,58 @@ from .db import async_session, init_db
 from .email_verify import generate_email, wait_for_code
 from .language import detect_language
 from .models import Account, Contact
-from .telethon_client import build_client
+from .telethon_client import DEVICE_FIELDS, build_client, missing_fingerprint_fields
 
 
 # Сколько последних сообщений берём чтобы оценить language_hint и last_msg_at
 MESSAGES_TO_INSPECT = 50
+
+
+def _extract_fingerprint(row: dict) -> dict:
+    """
+    Достаёт 5 device-полей из CSV-строки. Возвращает dict с теми что есть.
+    Пустые / отсутствующие значения опускаются (нет ключа).
+    """
+    result = {}
+    for f in DEVICE_FIELDS:
+        v = (row.get(f) or "").strip()
+        if v:
+            result[f] = v
+    return result
+
+
+def _validate_fingerprint(name: str, fp: dict) -> tuple[bool, str]:
+    """
+    Проверяет fingerprint на полноту согласно STRICT_REAL_FINGERPRINT.
+    Возвращает (ok, reason).
+    """
+    missing = [f for f in DEVICE_FIELDS if f not in fp]
+
+    if not missing:
+        return True, "ok"
+
+    if settings.strict_real_fingerprint:
+        return False, f"missing_real_fingerprint:{','.join(missing)}"
+
+    # non-strict — подставляем FALLBACK для lang/system_lang, остальные оставляем
+    # как есть (None). Это всё ещё палевно, но хотя бы не "Desktop"+"en".
+    if "lang_code" in missing:
+        fp["lang_code"] = settings.fallback_lang_code
+        logger.warning(
+            f"[{name}] FALLBACK lang_code={fp['lang_code']} (не реальный!)"
+        )
+    if "system_lang_code" in missing:
+        fp["system_lang_code"] = settings.fallback_system_lang_code
+        logger.warning(
+            f"[{name}] FALLBACK system_lang_code={fp['system_lang_code']} (не реальный!)"
+        )
+    still_missing = [f for f in DEVICE_FIELDS if f not in fp]
+    if still_missing:
+        logger.warning(
+            f"[{name}] остались без значения: {still_missing}. "
+            f"Telethon подставит свои дефолты — высокий риск антифрода."
+        )
+    return True, "ok_with_fallbacks"
 
 
 async def _upsert_account(row: dict) -> Account | None:
@@ -57,6 +104,39 @@ async def _upsert_account(row: dict) -> Account | None:
 
     carrier = detect_carrier(phone)
 
+    # КРИТИЧНО: реальный fingerprint
+    fingerprint = _extract_fingerprint(row)
+    ok, reason = _validate_fingerprint(name, fingerprint)
+    if not ok:
+        logger.error(
+            f"[{name}] {reason} — аккаунт отклонён. "
+            f"Заполни в CSV все 5 полей: device_model, system_version, "
+            f"app_version, lang_code, system_lang_code. "
+            f"Либо отключи STRICT_REAL_FINGERPRINT (НЕ рекомендую)."
+        )
+        # Записываем аккаунт в БД disabled чтобы видеть его в репортах
+        async with async_session() as session:
+            existing = (await session.execute(
+                select(Account).where(Account.name == name)
+            )).scalar_one_or_none()
+            if existing:
+                existing.status = "disabled"
+                existing.status_reason = reason
+                existing.enabled = False
+                existing.carrier = carrier
+                await session.commit()
+            else:
+                session.add(Account(
+                    name=name, phone=phone,
+                    session_string=(row.get("session_string") or "").strip() or "",
+                    carrier=carrier,
+                    enabled=False,
+                    status="disabled",
+                    status_reason=reason,
+                ))
+                await session.commit()
+        return None
+
     async with async_session() as session:
         existing = (await session.execute(
             select(Account).where(Account.name == name)
@@ -65,14 +145,9 @@ async def _upsert_account(row: dict) -> Account | None:
         fields = dict(
             phone=phone,
             session_string=row["session_string"].strip(),
-            device_model=(row.get("device_model") or "").strip() or None,
-            system_version=(row.get("system_version") or "").strip() or None,
-            app_version=(row.get("app_version") or "").strip() or None,
-            lang_code=(row.get("lang_code") or "").strip()
-                      or settings.default_lang_code,
-            system_lang_code=(row.get("system_lang_code") or "").strip()
-                             or settings.default_system_lang_code,
             carrier=carrier,
+            # device-поля — строго из fingerprint (валидированы выше)
+            **fingerprint,
         )
 
         if existing:

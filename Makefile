@@ -44,5 +44,11 @@ optout:
 test-imap:
 	docker compose run --rm sender-0 python -m src.email_verify
 
+verify-fingerprints:
+	docker compose run --rm sender-0 python -m src.verify_fingerprints
+
+verify-fingerprints-bad:
+	docker compose run --rm sender-0 python -m src.verify_fingerprints --bad
+
 psql:
 	docker compose exec postgres psql -U tg -d tg_broadcaster

@@ -37,8 +37,25 @@ class Settings(BaseSettings):
     active_timezone: str = Field("Asia/Tashkent", alias="ACTIVE_TIMEZONE")
     active_hours_start: int = Field(9, alias="ACTIVE_HOURS_START")
     active_hours_end: int = Field(23, alias="ACTIVE_HOURS_END")
-    default_lang_code: str = Field("ru", alias="DEFAULT_LANG_CODE")
-    default_system_lang_code: str = Field("ru-UZ", alias="DEFAULT_SYSTEM_LANG_CODE")
+
+    # === Device-fingerprint strictness ===
+    # ВАЖНО: вся идея проекта строится на том что каждый аккаунт ходит с
+    # реального device-fingerprint того клиента, с которого он изначально
+    # логинился. Дефолты Telethon ("Desktop"/"en") для +998 UZ номера выглядят
+    # для антифрода как угнанная сессия. Поэтому по умолчанию strict-режим.
+    #
+    # STRICT_REAL_FINGERPRINT=true (default):
+    #   импорт ОБЯЗАТЕЛЬНО требует все 5 device-полей в CSV.
+    #   Если хоть одно поле пустое → аккаунт отвергается с
+    #   status='disabled' reason='missing_real_fingerprint'.
+    #
+    # STRICT_REAL_FINGERPRINT=false (НЕ рекомендую):
+    #   пустые поля молча заменяются на FALLBACK_* значения ниже.
+    #   Использовать только если знаешь что делаешь.
+    strict_real_fingerprint: bool = Field(True, alias="STRICT_REAL_FINGERPRINT")
+    fallback_lang_code: str = Field("ru", alias="FALLBACK_LANG_CODE")
+    fallback_system_lang_code: str = Field("ru-UZ", alias="FALLBACK_SYSTEM_LANG_CODE")
+
     respect_carrier_limits: bool = Field(True, alias="RESPECT_CARRIER_LIMITS")
     beeline_uz_limit_multiplier: float = Field(
         0.6, alias="BEELINE_UZ_LIMIT_MULTIPLIER"

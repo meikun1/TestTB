@@ -93,19 +93,54 @@ make logs
 
 Через 6-24 часа рассылка завершится.
 
+## Device-fingerprint — самая важная штука
+
+**Каждый аккаунт ходит со СВОИМ реальным fingerprint** того клиента, с которого он изначально логинился. Это критично — без этого антифрод видит «UZ-номер коннектится с дефолтных Desktop/en, странно» и быстро банит.
+
+Все 5 полей обязательны:
+- `device_model` (например `iPhone 14`, `Samsung Galaxy S23`, `Telegram Desktop`)
+- `system_version` (например `iOS 16.5.1`, `Android 14`, `Windows 11`)
+- `app_version` (версия Telegram-клиента: `10.2.0`, `5.5.0`)
+- `lang_code` (`ru` или `uz`)
+- `system_lang_code` (`ru-UZ` или `uz-UZ`)
+
+**По умолчанию `STRICT_REAL_FINGERPRINT=true`** — импорт отвергает аккаунты у которых хоть одно поле пустое. Они попадают в `status='disabled' reason='missing_real_fingerprint'` и не используются в рассылке.
+
+Если выключить strict (`STRICT_REAL_FINGERPRINT=false` в `.env`) — пустые `lang_code`/`system_lang_code` заменятся на `FALLBACK_*` значения, остальные поля останутся пустыми и Telethon подставит свои дефолты (`Desktop`/`en`/`en`) что для UZ-номера = красный флаг. **НЕ рекомендую.**
+
+Проверить какие аккаунты с реальным fingerprint, а какие нет:
+
+```bash
+make verify-fingerprints           # все аккаунты
+make verify-fingerprints-bad       # только неполные
+```
+
+Вывод:
+```
+acc01    +998901234567  status=active   device=iPhone 14    os=iOS 16.5.1     app=10.2.0     lang=ru     sys_lang=ru-UZ  ✓ REAL
+acc02    +998931234567  status=disabled device=—            os=—              app=—          lang=—      sys_lang=—      ✗ missing: device_model,system_version,app_version,lang_code,system_lang_code
+```
+
 ## CSV-формат аккаунтов
 
 ```
 name,phone,session_string,device_model,system_version,app_version,lang_code,system_lang_code
 acc01,+998901234567,1BVtsOK4Bu...,iPhone 14,iOS 16.5.1,10.2.0,ru,ru-UZ
+acc02,+998931234567,1BVtsOK4Bu...,Samsung Galaxy S23,Android 14,10.4.1,uz,uz-UZ
 ```
 
 Поля:
 - `name` — уникальный идентификатор аккаунта в системе
 - `phone` — UZ номер (+998 XX XXXXXXX), валидируется по carrier-префиксу
 - `session_string` — Telethon StringSession (выгружается из tdata или после логина)
-- `device_model`, `system_version`, `app_version` — реальный device-fingerprint того клиента где аккаунт изначально логинился (если не знаешь — оставь пустым, тогда дефолты Telethon)
-- `lang_code`, `system_lang_code` — если пусто, дефолты из `.env` (по умолчанию `ru` / `ru-UZ`)
+- `device_model`, `system_version`, `app_version`, `lang_code`, `system_lang_code` — **все 5 обязательны**. Откуда взять — см. секцию ниже.
+
+### Откуда брать реальный fingerprint
+
+- **Из tdata** — Telegram Desktop хранит device-info в файле `D877F783D5D3EF8C` внутри tdata. Можно распарсить (есть open-source утилиты)
+- **Из собственного логина через Telethon** — если ты логинил аккаунт сам, использовал те же параметры в `TelegramClient(...)`, запиши их
+- **От поставщика прогретых аккаунтов** — серьёзные фермы хранят и предоставляют. Если поставщик отказывается — слабый сигнал что прогрев у него поверхностный
+- **Из самой Telegram-сессии** — после `client.start()` параметры с которыми коннектился сохраняются в session. Их можно вытащить через дополнительные шаги (выходит за рамки этого README)
 
 ## Поддерживаемые типы вложений
 
