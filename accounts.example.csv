@@ -1,0 +1,4 @@
+name,phone,session_string,device_model,system_version,app_version,lang_code,system_lang_code
+acc01,+998901234567,1BVtsOK4Bu...PLACEHOLDER_STRING_SESSION...,iPhone 14,iOS 16.5.1,10.2.0,ru,ru-UZ
+acc02,+998931234567,1BVtsOK4Bu...PLACEHOLDER_STRING_SESSION...,Samsung Galaxy S23,Android 14,10.4.1,uz,uz-UZ
+acc03,+998997654321,1BVtsOK4Bu...PLACEHOLDER_STRING_SESSION...,iPhone 13 Pro,iOS 17.4,10.5.2,ru,ru-UZ

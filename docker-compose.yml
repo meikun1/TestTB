@@ -1,0 +1,58 @@
+x-app-base: &app-base
+  build: .
+  image: tg-broadcaster:latest
+  env_file: .env
+  volumes:
+    - ./attachments:/app/attachments
+    - ./logs:/app/logs
+    - ./sessions:/app/sessions
+    - ./accounts.csv:/app/accounts.csv:ro
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tg-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tg}
+      POSTGRES_DB: ${POSTGRES_DB:-tg_broadcaster}
+    command:
+      - postgres
+      - -c
+      - max_connections=400
+      - -c
+      - shared_buffers=512MB
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-tg}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Слушатель входящих для глобального opt-out
+  optout:
+    <<: *app-base
+    container_name: tg-optout
+    command: python -m src.optout
+
+  # 10 sender-воркеров. Если меняешь WORKER_COUNT в .env — подгоняй число
+  # sender-N сервисов синхронно.
+  sender-0: { <<: *app-base, container_name: tg-sender-0, command: python -m src.sender --shard 0 }
+  sender-1: { <<: *app-base, container_name: tg-sender-1, command: python -m src.sender --shard 1 }
+  sender-2: { <<: *app-base, container_name: tg-sender-2, command: python -m src.sender --shard 2 }
+  sender-3: { <<: *app-base, container_name: tg-sender-3, command: python -m src.sender --shard 3 }
+  sender-4: { <<: *app-base, container_name: tg-sender-4, command: python -m src.sender --shard 4 }
+  sender-5: { <<: *app-base, container_name: tg-sender-5, command: python -m src.sender --shard 5 }
+  sender-6: { <<: *app-base, container_name: tg-sender-6, command: python -m src.sender --shard 6 }
+  sender-7: { <<: *app-base, container_name: tg-sender-7, command: python -m src.sender --shard 7 }
+  sender-8: { <<: *app-base, container_name: tg-sender-8, command: python -m src.sender --shard 8 }
+  sender-9: { <<: *app-base, container_name: tg-sender-9, command: python -m src.sender --shard 9 }
+
+volumes:
+  postgres_data:
